@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Star and Moon Photography</title>
+</head>
+<body>
+    <button onclick="sendCommand('pan', 1)">Pan Right</button>
+    <button onclick="sendCommand('pan', -1)">Pan Left</button>
+    <button onclick="sendCommand('tilt', 1)">Tilt Up</button>
+    <button onclick="sendCommand('tilt', -1)">Tilt Down</button>
+
+    <script>
+        var socket = new WebSocket("ws://localhost:8765");
+
+        function sendCommand(command, degrees) {
+            socket.send(command + " " + degrees);
+        }
+    </script>
+</body>
+</html>
