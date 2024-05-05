@@ -20,11 +20,12 @@ class L298NDriver(MotorDriver):
             (False, True, False, False),
             (True, False, False, False)
         ]
-        for _ in range(steps):
-            for state in sequence:
-                for device, value in zip(self.motor_devices, state):
-                    device.value = value
-                time.sleep(step_delay)  # Small delay between steps for visibility
+        total_steps = len(sequence) * steps  # Calculate total iterations
+        for i in range(total_steps):
+            state = sequence[i % len(sequence)]  # Cycle through the sequence
+            for device, value in zip(self.motor_devices, state):
+                device.value = value
+            time.sleep(step_delay)  # Small delay between steps for visibility
 
     def cleanup(self):
         # This function resets all GPIO pins to low when they are no longer needed
