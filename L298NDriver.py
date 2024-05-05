@@ -6,13 +6,22 @@ class L298NDriver(MotorDriver):
     def __init__(self, motor_pins):
         # motor_pins should be a dictionary like {'A': [17, 18], 'B': [27, 22]}
         self.motor_pins = motor_pins
-        self.chip = gpiod.Chip('/dev/gpiochip0')
+        # self.chip = gpiod.Chip('/dev/gpiochip0')
+        self.chip = "/dev/gpiochip0"
         self.setup_pins()
 
     def setup_pins(self):
-        # This function sets up motor pins
-        self.lines = self.chip.get_lines(self.motor_pins)
-        self.lines.request(consumer='stepper_motor', type=gpiod.LINE_REQ_DIR_OUT)
+        # Initialize the chip and request lines with configurations
+        with gpiod.Chip(self.chip) as chip:
+            # Request lines with configurations for each line
+            self.lines = chip.get_lines(self.motor_pins)
+            self.lines.request(consumer="stepper-motor", type=gpiod.LineRequest.DIRECTION_OUTPUT, default_vals=[0]*len(self.motor_pins))
+
+            # Assume each line has the same configuration for simplicity here
+            # Normally, you might adjust for each line if needed
+            for line in self.lines:
+                line.reconfigure(direction=gpiod.Direction.OUTPUT, output_value=gpiod.Value.LOW)
+
 
     def step_to_angle(self, degrees):
         #TODO: implement drive stepper driver to reach the full assembly's final degree of pan/tilt motors
@@ -34,5 +43,7 @@ class L298NDriver(MotorDriver):
 
     def cleanup(self):
         # This function releases the GPIO lines when they are no longer needed
+        for line in self.lines:
+            line.set_value(0)
         self.lines.release()
 
