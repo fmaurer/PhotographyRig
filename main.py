@@ -39,3 +39,6 @@ def main():
     # Cleanup on program exit
     l298n_driver_1.cleanup()
     l298n_driver_2.cleanup()
+
+if __name__ == '__main__':
+    main()

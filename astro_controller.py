@@ -13,6 +13,7 @@ class AstroController:
         #see here: https://docs.astropy.org/en/stable/generated/examples/coordinates/plot_obs-planning.html
         # Get the current time
         now = Time.now()
+        print("Pointing at moon...")
 
         # Get the current location of the moon using the updated function
         moon = get_body("moon", now)

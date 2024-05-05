@@ -22,6 +22,7 @@ class L298NDriver(MotorDriver):
         return 0
 
     def step_motor(self, steps, step_delay):
+        print("Moving stepper ", str(steps), " with a ", str(step_delay), " delay")
         sequence = [
             (1, 0, 0, 1),  # This sequence should be adjusted based on your motor and wiring
             (0, 1, 0, 1),
