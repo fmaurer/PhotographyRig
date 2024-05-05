@@ -6,13 +6,16 @@ class L298NDriver(MotorDriver):
     def __init__(self, motor_pins):
         # motor_pins should be a dictionary like {'A': [17, 18], 'B': [27, 22]}
         self.motor_pins = motor_pins
-        self.chip = gpiod.Chip('gpiochip0')
+        self.chip = gpiod.Chip('/dev/gpiochip0')
         self.lines = self.setup_pins()
 
     def setup_pins(self):
-        lines = self.chip.get_lines([pin for sublist in self.motor_pins.values() for pin in sublist])
-        lines.request(consumer='motor', type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0]*len(lines))
-        return lines
+        line_objects = {}
+        for key, pins in self.motor_pins.items():
+            line_objects[key] = [self.chip.get_line(pin) for pin in pins]
+            for line in line_objects[key]:
+                line.request(consumer='motor', type=gpiod.LINE_REQ_DIR_OUT, default_vals=0)
+        return line_objects
 
     def step_to_angle(self, degrees):
         #TODO: implement drive stepper driver to reach the full assembly's final degree of pan/tilt motors
@@ -34,11 +37,13 @@ class L298NDriver(MotorDriver):
                 time.sleep(step_delay)
 
     def set_pins_state(self, state):
-        # Map state to line offsets: A0, A1, B0, B1
-        offsets = [self.motor_pins['A'][0], self.motor_pins['A'][1], self.motor_pins['B'][0], self.motor_pins['B'][1]]
-        for offset, value in zip(offsets, state):
-            self.lines[offset].set_value(value)
+        for key, pins in self.lines.items():
+            for pin, value in zip(pins, state):
+                pin.set_value(value)
 
     def cleanup(self):
-        self.lines.release()
+        for key, pins in self.lines.items():
+            for pin in pins:
+                pin.reconfigure(type=gpiod.LINE_REQ_DIR_OUT, default_vals=0)
+        self.chip.close()
 
