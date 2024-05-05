@@ -16,8 +16,8 @@ class L298NDriver(MotorDriver):
         print("Moving stepper ", str(steps), " with a ", str(step_delay), " delay")
         sequence = [
             (True, False, False, True),  # This sequence should be adjusted based on your motor and wiring
-            (False, True, False, True),
             (False, True, True, False),
+            (False, True, False, True),
             (True, False, True, False)
         ]
         for _ in range(steps):
