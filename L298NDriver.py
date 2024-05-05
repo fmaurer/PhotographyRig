@@ -9,7 +9,7 @@ class L298NDriver(MotorDriver):
 
     def step_to_angle(self, degrees):
         #TODO: Implement drive stepper driver to reach the full assembly's final degree of pan/tilt motors
-        self.step_motor(200, 0.02)
+        self.step_motor(200, 0.005)
         return 0
 
     def step_motor(self, steps, step_delay):
@@ -20,8 +20,7 @@ class L298NDriver(MotorDriver):
             (False, True, False, False),
             (True, False, False, False)
         ]
-        total_steps = len(sequence) * steps  # Calculate total iterations
-        for i in range(total_steps):
+        for i in range(steps):
             state = sequence[i % len(sequence)]  # Cycle through the sequence
             for device, value in zip(self.motor_devices, state):
                 device.value = value
