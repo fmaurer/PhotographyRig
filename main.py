@@ -1,4 +1,4 @@
-from motor_driver import L298NDriver
+import L298NDriver
 from motor_controller import MotorController
 from astro_controller import AstroController
 from websocket_server import WebSocketServer
