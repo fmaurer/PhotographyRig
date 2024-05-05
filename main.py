@@ -11,8 +11,8 @@ def main():
     pan_pins = [17, 18, 27, 22]
     tilt_pins = [23, 24, 25, 4]
 
-    motor_pins_1 = {'A': [17, 18], 'B': [27, 22]}  # Define pins for two inputs per motor channel
-    motor_pins_2 = {'A': [23, 24], 'B': [25, 4]}  # Define pins for two inputs per motor channel
+    motor_pins_1 = [17, 18, 27, 22]  # Define pins for two inputs per motor channel
+    motor_pins_2 = [23, 24, 25, 4] # Define pins for two inputs per motor channel
 
     # Initialize the motor driver, swap out for new ones in future
     l298n_driver_1 = L298NDriver(motor_pins_1)

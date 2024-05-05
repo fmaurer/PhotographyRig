@@ -6,15 +6,13 @@ class L298NDriver(MotorDriver):
     def __init__(self, motor_pins):
         # motor_pins should be a dictionary like {'A': [17, 18], 'B': [27, 22]}
         self.motor_pins = motor_pins
-        self.chip = gpiod.Chip('gpiochip0')
-        self.lines = self.setup_pins()
+        self.chip = gpiod.Chip('/dev/gpiochip0')
+        self.setup_pins()
 
     def setup_pins(self):
-        # Consolidate all pin numbers into a single list for batch request
-        all_pins = [pin for sublist in self.motor_pins.values() for pin in sublist]
-        lines = self.chip.get_lines(all_pins)  # This should be the correct way to get multiple lines
-        lines.request(consumer='motor', type=gpiod.LINE_REQ_DIR_OUT, default_vals=[0]*len(all_pins))
-        return lines
+        # This function sets up motor pins
+        self.lines = self.chip.get_lines(self.motor_pins)
+        self.lines.request(consumer='stepper_motor', type=gpiod.LINE_REQ_DIR_OUT)
 
     def step_to_angle(self, degrees):
         #TODO: implement drive stepper driver to reach the full assembly's final degree of pan/tilt motors
@@ -29,17 +27,12 @@ class L298NDriver(MotorDriver):
             (0, 1, 1, 0),
             (1, 0, 1, 0)
         ]
-        step_count = len(sequence)
         for i in range(steps):
-            for step in range(step_count):
-                self.set_pins_state(sequence[step])
-                time.sleep(step_delay)
-
-    def set_pins_state(self, state):
-        offsets = [self.motor_pins['A'][0], self.motor_pins['A'][1], self.motor_pins['B'][0], self.motor_pins['B'][1]]
-        for i, value in enumerate(state):
-            self.lines.get_line(offsets[i]).set_value(value)
+            for state in sequence:
+                self.lines.set_values(state)
+            time.sleep(step_delay)  # small delay between steps for visibility
 
     def cleanup(self):
+        # This function releases the GPIO lines when they are no longer needed
         self.lines.release()
 
