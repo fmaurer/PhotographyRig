@@ -1,49 +1,32 @@
 import time
-import gpiod
+from gpiozero import OutputDevice
 from motor_driver import MotorDriver
 
 class L298NDriver(MotorDriver):
     def __init__(self, motor_pins):
-        # motor_pins should be a dictionary like {'A': [17, 18], 'B': [27, 22]}
-        self.motor_pins = motor_pins
-        # self.chip = gpiod.Chip('/dev/gpiochip0')
-        self.chip = "/dev/gpiochip0"
-        self.setup_pins()
-
-    def setup_pins(self):
-        # Initialize the chip and request lines with configurations
-        with gpiod.Chip(self.chip) as chip:
-            # Request lines with configurations for each line
-            self.lines = chip.get_lines(self.motor_pins)
-            self.lines.request(consumer="stepper-motor", type=gpiod.LineRequest.DIRECTION_OUTPUT, default_vals=[0]*len(self.motor_pins))
-
-            # Assume each line has the same configuration for simplicity here
-            # Normally, you might adjust for each line if needed
-            for line in self.lines:
-                line.reconfigure(direction=gpiod.Direction.OUTPUT, output_value=gpiod.Value.LOW)
-
+        # motor_pins should be a list of pin numbers
+        self.motor_devices = [OutputDevice(pin) for pin in motor_pins]
 
     def step_to_angle(self, degrees):
-        #TODO: implement drive stepper driver to reach the full assembly's final degree of pan/tilt motors
+        #TODO: Implement drive stepper driver to reach the full assembly's final degree of pan/tilt motors
         self.step_motor(200, 0.02)
         return 0
 
     def step_motor(self, steps, step_delay):
         print("Moving stepper ", str(steps), " with a ", str(step_delay), " delay")
         sequence = [
-            (1, 0, 0, 1),  # This sequence should be adjusted based on your motor and wiring
-            (0, 1, 0, 1),
-            (0, 1, 1, 0),
-            (1, 0, 1, 0)
+            (True, False, False, True),  # This sequence should be adjusted based on your motor and wiring
+            (False, True, False, True),
+            (False, True, True, False),
+            (True, False, True, False)
         ]
-        for i in range(steps):
+        for _ in range(steps):
             for state in sequence:
-                self.lines.set_values(state)
-            time.sleep(step_delay)  # small delay between steps for visibility
+                for device, value in zip(self.motor_devices, state):
+                    device.value = value
+                time.sleep(step_delay)  # Small delay between steps for visibility
 
     def cleanup(self):
-        # This function releases the GPIO lines when they are no longer needed
-        for line in self.lines:
-            line.set_value(0)
-        self.lines.release()
-
+        # This function resets all GPIO pins to low when they are no longer needed
+        for device in self.motor_devices:
+            device.off()
