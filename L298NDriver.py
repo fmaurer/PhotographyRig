@@ -18,6 +18,7 @@ class L298NDriver(MotorDriver):
     
     def step_to_angle(self, degrees):
         #TODO: implement drive stepper driver to reach the full assembly's final degree of pan/tilt motors
+        self.step_motor(200, 0.02)
         return 0
 
     def step_motor(self, steps, step_delay):
