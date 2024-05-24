@@ -31,10 +31,10 @@ def main():
 
     # Initialize the WebSocket server
     #TODO: make it work with refactor where independant pan and tilt controllers
-    #websocket_server = WebSocketServer(pan_motor_controller, tilt_motor_controller)
+    websocket_server = WebSocketServer(pan_motor_controller, tilt_motor_controller)
 
     # Start the WebSocket server
-    # websocket_server.start()
+    websocket_server.start()
 
     # Cleanup on program exit
     l298n_driver_1.cleanup()
