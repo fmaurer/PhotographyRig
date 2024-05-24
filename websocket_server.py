@@ -2,7 +2,7 @@ import websockets
 import asyncio
 
 class WebSocketServer:
-    def __init__(self, motor_controller):
+    def __init__(self, motor_controller, motor_controller2):
         self.motor_controller = motor_controller
 
     async def handler(self, websocket, path):
@@ -17,7 +17,7 @@ class WebSocketServer:
                 self.motor_controller.tilt(degrees)
 
     def start(self):
-        start_server = websockets.serve(self.handler, "localhost", 8765)
+        start_server = websockets.serve(self.handler, "0.0.0.0", 8765)
 
         asyncio.get_event_loop().run_until_complete(start_server)
         asyncio.get_event_loop().run_forever()

@@ -2,18 +2,143 @@
 <html>
 <head>
     <title>Star and Moon Photography</title>
+    <style>
+        body {
+            background-color: #1d1d1d;
+        }
+        #container { 
+            //background-color:Gray;
+            width:800px;
+            margin: 50px auto;
+        }
+
+        #capture-button{
+            display: block;
+            margin: 6px;
+            width: 132px;
+            height: 60px;
+            background-color: gray;
+            font-size: 15px;
+            text-transform: uppercase;
+            font-weight: bold;
+            float: right;
+        }
+
+
+        #stream-container iframe{
+            width: 365px;
+            margin-left: 19px;
+            height: 206px;
+        }
+        #stream-container iframe:nth-child(2){
+            border: 4px solid #b80000;
+        }
+
+        #stream-container {
+            width:100%;
+            //background-color:black;
+        }
+
+        .half-panel{
+            width: 49%;
+            display: inline-block;
+        }
+        .half-panel button{
+            width: 168px;
+            display: inline-block;
+            height: 79px;
+            margin: 0px auto;
+            background-color: gray;
+            font-size: 56px;
+        }
+        .half-panel:nth-child(1) button{
+            margin-left: 28px;
+        }
+
+        .half-panel .hidden{
+            display:none;
+        }
+
+        .half-panel h1{
+            text-align: center;
+            color:gray;
+        }
+
+        #console {
+            background-color:black;
+            color:white;
+            width: 794px;
+            height: 161px;
+            border-top: 24px solid #dedede;
+        }
+    </style>
 </head>
 <body>
-    <button onclick="sendCommand('pan', 1)">Pan Right</button>
-    <button onclick="sendCommand('pan', -1)">Pan Left</button>
-    <button onclick="sendCommand('tilt', 1)">Tilt Up</button>
-    <button onclick="sendCommand('tilt', -1)">Tilt Down</button>
+
+    <div id="container">
+
+        <div id="debug-controls">   
+        </div>
+
+        <div id="stream-container">
+            <iframe src="http://bilbo.local:8889/cam1/"></iframe>
+            <iframe src="http://bilbo.local:8889/cam0/"></iframe>
+        </div>
+
+        <div class="half-panel">
+            <h1>telemetry</h1>
+        </div>
+        <div class="half-panel">
+            <div class="half-panel"><button onclick="sendCommand('pan', -1)">&#8678;</button></div>
+            <div class="half-panel"><button onclick="sendCommand('pan', 1)">&#8680;</button></div>
+
+            <button class="hidden" onclick="sendCommand('tilt', 1)">Tilt Up</button>
+            <button class="hidden" onclick="sendCommand('tilt', -1)">Tilt Down</button>
+
+            <button id="capture-button" onclick="sendCommand('capture', 0)">Take Photo</button>
+        </div>
+
+        <textarea id="console">
+            Console area...
+        </textarea>
+
+    </div>
 
     <script>
-        var socket = new WebSocket("ws://localhost:8765");
+        var socket = new WebSocket("ws://bilbo.local:8765");
+
+        socket.onopen = function(event) {
+            writeToConsole("Connection opened");
+        };
+
+        socket.onmessage = function(event) {
+            receiveResponse(event.data);
+        };
+
+        socket.onerror = function(error) {
+            writeToConsole("Error: " + error.message);
+        };
+
+        socket.onclose = function(event) {
+            writeToConsole("Connection closed: " + (event.wasClean ? "clean" : "unclean") + ", Code: " + event.code + ", Reason: " + event.reason);
+        };
 
         function sendCommand(command, degrees) {
-            socket.send(command + " " + degrees);
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(command + " " + degrees);
+            } else {
+                writeToConsole("Cannot send command, socket is not open");
+            }
+        }
+
+        function receiveResponse(response){
+            writeToConsole(response)
+        }
+
+        function writeToConsole(str){
+            var consoleArea = document.getElementById('console');
+            consoleArea.value += "\n" + str;
+            consoleArea.scrollTop = consoleArea.scrollHeight; // Scroll to the bottom
         }
     </script>
 </body>
