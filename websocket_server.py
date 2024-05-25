@@ -2,6 +2,7 @@ import websockets
 import asyncio
 import subprocess
 import os
+import datetime
 
 class WebSocketServer:
     def __init__(self, motor_controller, motor_controller2):
@@ -55,11 +56,14 @@ class WebSocketServer:
 
     # Function to capture a photo
     def capture_photo(self,cam):
-        photo_command = 'rpicam-still -o ./captures/test_'+str(cam)+'.jpg --immediate --nopreview --camera '+str(cam)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        file_path = f'./captures/cam{cam}_{timestamp}.jpg'
+        photo_command = f'rpicam-still -o {file_path} --immediate --nopreview --camera {cam}'
+        #photo_command = 'rpicam-still -o ./captures/test_'+str(cam)+'.jpg --immediate --nopreview --camera '+str(cam)
         return subprocess.Popen(photo_command, shell=True)
         #subprocess.run(photo_command, shell=True)
     
     def start_file_server(self):
-        server_command = 'python -m http.server --directory captures'
-        return subprocess.Popen(server_command, shell=False)
+        server_command = 'python -m http.server --directory ./captures' #defaults to port 8000
+        return subprocess.Popen(server_command, shell=True)
 
