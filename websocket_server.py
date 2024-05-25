@@ -6,6 +6,8 @@ import os
 class WebSocketServer:
     def __init__(self, motor_controller, motor_controller2):
         self.motor_controller = motor_controller
+        self.file_server = self.start_file_server()
+        print("File server started")
         # Start the video stream
         self.capture_process = self.start_stream()
         print("Video stream started")
@@ -56,4 +58,8 @@ class WebSocketServer:
         photo_command = 'rpicam-still -o ./captures/test_'+str(cam)+'.jpg --immediate --nopreview --camera '+str(cam)
         return subprocess.Popen(photo_command, shell=True)
         #subprocess.run(photo_command, shell=True)
+    
+    def start_file_server(self):
+        server_command = 'python -m http.server --directory captures'
+        return subprocess.Popen(server_command, shell=False)
 
