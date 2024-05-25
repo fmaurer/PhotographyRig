@@ -19,9 +19,9 @@ class WebSocketServer:
             argument = int(argument)
 
             if command == "pan":
-                self.motor_controller.pan(argument) #degrees
+                self.motor_controller.step_to_angle(argument) #degrees
             elif command == "tilt":
-                self.motor_controller.tilt(argument) #degrees
+                self.motor_controller.step_to_angle(argument) #degrees
             elif command =="capture":
                 self.trigger_camera(argument) #cam index
 
@@ -44,7 +44,7 @@ class WebSocketServer:
     def start_stream(self):
         stream_command = './mediamtx'
         mediamtx_dir = os.path.expanduser('~/Downloads')
-        return subprocess.Popen(stream_command, cwd=mediamtx_dir, shell=True)
+        return subprocess.Popen(stream_command, cwd=mediamtx_dir, shell=False)
 
     # Function to stop the video stream
     def stop_stream(self, process):
@@ -53,7 +53,7 @@ class WebSocketServer:
 
     # Function to capture a photo
     def capture_photo(self,cam):
-        photo_command = 'rpicam-still -o test_'+cam+'.jpg --immediate --nopreview --camera '+cam
+        photo_command = 'rpicam-still -o ./captures/test_'+str(cam)+'.jpg --immediate --nopreview --camera '+str(cam)
         return subprocess.Popen(photo_command, shell=True)
         #subprocess.run(photo_command, shell=True)
 
