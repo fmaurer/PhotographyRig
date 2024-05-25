@@ -35,7 +35,7 @@ class WebSocketServer:
     def trigger_camera(self, idx):
         self.stop_stream(self.capture_process)
 
-        self.capture_process = self.capture_photo()
+        self.capture_process = self.capture_photo(idx)
 
         self.capture_process.wait()
 
@@ -52,8 +52,8 @@ class WebSocketServer:
         process.wait()
 
     # Function to capture a photo
-    def capture_photo(self):
-        photo_command = 'raspistill -o test_image.jpg -w 1920 -h 1080'
+    def capture_photo(self,cam):
+        photo_command = 'rpicam-still -o test_'+cam+'.jpg --immediate --nopreview --camera '+cam
         return subprocess.Popen(photo_command, shell=True)
         #subprocess.run(photo_command, shell=True)
 
