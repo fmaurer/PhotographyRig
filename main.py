@@ -15,8 +15,8 @@ def main():
     motor_pins_2 = [23, 24, 25, 4] # Define pins for two inputs per motor channel
 
     # Initialize the motor driver, swap out for new ones in future
-    l298n_driver_1 = L298NDriver(motor_pins_1)
-    l298n_driver_2 = L298NDriver(motor_pins_2)
+    l298n_driver_1 = L298NDriver(pan_pins)
+    l298n_driver_2 = L298NDriver(tilt_pins)
 
     # Initialize the motor controller with L298N driver
     pan_motor_controller = MotorController(l298n_driver_1)
@@ -31,6 +31,7 @@ def main():
 
     # Initialize the WebSocket server
     #TODO: make it work with refactor where independant pan and tilt controllers
+    #TODO: figure out how to trigger photos
     websocket_server = WebSocketServer(pan_motor_controller, tilt_motor_controller)
 
     # Start the WebSocket server

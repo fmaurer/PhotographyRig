@@ -124,10 +124,12 @@
         };
 
         function sendCommand(command, degrees) {
+            msg = command + " " + degrees
             if (socket.readyState === WebSocket.OPEN) {
-                socket.send(command + " " + degrees);
+                socket.send(msg);
+                writeToConsole("SENT: " + msg)
             } else {
-                writeToConsole("Cannot send command, socket is not open");
+                writeToConsole("Cannot send command, socket is not open: " + msg);
             }
         }
 
