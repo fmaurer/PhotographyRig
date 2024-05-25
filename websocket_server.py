@@ -1,6 +1,7 @@
 import websockets
 import asyncio
 import subprocess
+import os
 
 class WebSocketServer:
     def __init__(self, motor_controller, motor_controller2):
@@ -41,11 +42,9 @@ class WebSocketServer:
         self.capture_process = self.start_stream()
 
     def start_stream(self):
-        stream_command = (
-            'rpicam-vid -t 0 --camera 1 --nopreview --codec yuv420 --width 1280 --height 720 --inline --listen -o - | '
-            'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1280x720 -i /dev/stdin -c:v libx264 -preset ultrafast -tune zerolatency -f rtsp rtsp://localhost:$RTSP_PORT/$MTX_PATH'
-        ).format(rtsp_port=8889, mtx_path="cam1")
-        return subprocess.Popen(stream_command, shell=True)
+        stream_command = './mediamtx'
+        mediamtx_dir = os.path.expanduser('~/Downloads')
+        return subprocess.Popen(stream_command, cwd=mediamtx_dir, shell=True)
 
     # Function to stop the video stream
     def stop_stream(self, process):
