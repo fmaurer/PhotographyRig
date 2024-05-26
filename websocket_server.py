@@ -15,6 +15,7 @@ class WebSocketServer:
         print("Video stream started")
         self.start_server()
         print("Websocket server started")
+        self.SYMLINK_PATH = './captures/cam0_last.jpg'
 
     async def handler(self, websocket):
         async for message in websocket:
@@ -64,9 +65,13 @@ class WebSocketServer:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         file_path = f'./captures/cam{cam}_{timestamp}.jpg'
         photo_command = f'rpicam-still -o {file_path} --immediate --nopreview --camera {cam}'
-        #photo_command = 'rpicam-still -o ./captures/test_'+str(cam)+'.jpg --immediate --nopreview --camera '+str(cam)
+        self.create_symlink(file_path)
         return subprocess.Popen(photo_command, shell=True)
-        #subprocess.run(photo_command, shell=True)
+
+    def create_symlink(self, file_path):
+        if os.path.islink(self.SYMLINK_PATH):
+            os.unlink(self.SYMLINK_PATH)
+        os.symlink(file_path, self.SYMLINK_PATH)
     
     def start_file_server(self):
         server_command = 'python -m http.server --directory ./captures' #defaults to port 8000
