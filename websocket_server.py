@@ -45,11 +45,11 @@ class WebSocketServer:
         self.capture_process = self.start_stream()
 
     def start_stream(self):
-        stream_command = './mediamtx/mediamtx'
-        return subprocess.Popen(stream_command, shell=False)
-        #stream_command = #'./mediamtx'
-        #mediamtx_dir = os.path.expanduser('~/Downloads')
-        #return subprocess.Popen(stream_command, cwd=mediamtx_dir, shell=False)
+        #stream_command = './mediamtx'
+        #return subprocess.Popen(stream_command, shell=False)
+        stream_command = './mediamtx'
+        mediamtx_dir = os.path.expanduser('./mediamtx')
+        return subprocess.Popen(stream_command, cwd=mediamtx_dir, shell=False)
 
     # Function to stop the video stream
     def stop_stream(self, process):
