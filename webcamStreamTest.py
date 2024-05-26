@@ -76,10 +76,10 @@ async def webrtc(request):
     elif params["type"] == "answer":
         pc = pcs[params["id"]]
 
-        if not pc:
-            return web.Response(
-                content_type="application
-        await pc.setRemoteDescription(RTCSessionDescription(sdp=params["sdp"], type=params["type"]))
+        # if not pc:
+        #     return web.Response(
+        #         content_type="application
+        # await pc.setRemoteDescription(RTCSessionDescription(sdp=params["sdp"], type=params["type"]))
 
         return web.Response(
             content_type="application/json",
