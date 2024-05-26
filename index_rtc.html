@@ -13,7 +13,7 @@
         const pc = new RTCPeerConnection();
 
         async function start() {
-            const response = await fetch('http://bilbo.local:8080/webrtc', {
+            const response = await fetch('/webrtc', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
@@ -27,7 +27,7 @@
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
 
-            await fetch('http://bilbo.local:8080/webrtc', {
+            await fetch('/webrtc', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
