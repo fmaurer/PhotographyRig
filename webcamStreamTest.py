@@ -74,18 +74,17 @@ async def webrtc(request):
             ),
         )
     elif params["type"] == "answer":
-        pc = pcs[params["id"]]
-
-        # if not pc:
-        #     return web.Response(
-        #         content_type="application
-        # await pc.setRemoteDescription(RTCSessionDescription(sdp=params["sdp"], type=params["type"]))
+        pc = pcs.get(params["id"])
+        if not pc:
+            return web.Response(
+                content_type="application/json",
+                text=json.dumps({"error": "PeerConnection not found"})
+            )
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=params["sdp"], type=params["type"]))
 
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-               {}
-            ),
+            text=json.dumps({})
         )
 
 async def on_shutdown(app):
