@@ -94,6 +94,9 @@ async def on_shutdown(app):
     await asyncio.gather(*coros)
     pcs.clear()
 
+async def index(request):
+    with open(os.path.join(ROOT, 'index_rtc.html'), 'r') as f:
+        return web.Response(text=f.read(), content_type='text/html')
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="RatRig V-Core VAOC (WebRTC camera-streamer)")
@@ -120,5 +123,6 @@ if __name__ == "__main__":
 
     app = web.Application()
     app.on_shutdown.append(on_shutdown)
+    app.router.add_get("/", index)  # Route to serve the index.html file
     app.router.add_post("/webrtc", webrtc)
     web.run_app(app, host=args.host, port=args.port, ssl_context=ssl_context)
