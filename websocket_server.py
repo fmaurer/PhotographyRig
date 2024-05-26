@@ -10,7 +10,8 @@ class WebSocketServer:
         self.file_server = self.start_file_server()
         print("File server started")
         # Start the video stream
-        self.capture_process = self.start_stream()
+        self.videostream_process = self.start_stream()
+        self.capture_process = None
         print("Video stream started")
         self.start_server()
         print("Websocket server started")
@@ -36,13 +37,15 @@ class WebSocketServer:
         asyncio.get_event_loop().run_forever()
     
     def trigger_camera(self, idx):
-        self.stop_stream(self.capture_process)
+        #self.stop_stream(self.capture_process)
 
         self.capture_process = self.capture_photo(idx)
 
         self.capture_process.wait()
 
-        self.capture_process = self.start_stream()
+        print("Photo saved to disk, process completed")
+
+        #self.capture_process = self.start_stream()
 
     def start_stream(self):
         #stream_command = './mediamtx'
