@@ -5,7 +5,6 @@ import logging
 import os
 import ssl
 import uuid
-import time
 import av
 from fractions import Fraction
 from picamera2 import Picamera2
@@ -13,7 +12,7 @@ from picamera2 import Picamera2
 from aiohttp import web
 import aiohttp_cors
 from aiortc import RTCPeerConnection, RTCSessionDescription
-from aiortc.contrib.media import MediaPlayer, MediaRelay, MediaStreamTrack
+from aiortc.contrib.media import MediaStreamTrack
 
 ROOT = os.path.dirname(__file__)
 
@@ -41,6 +40,13 @@ class PiCameraTrack(MediaStreamTrack):
 
 async def webrtc(request):
     params = await request.json()
+    print("Received params:", params)  # Debugging line
+    if "sdp" not in params:
+        return web.Response(
+            status=400,
+            content_type="application/json",
+            text=json.dumps({"error": "Missing 'sdp' in request payload"})
+        )
     if params["type"] == "offer":
         pc = RTCPeerConnection()
         pc_id = "PeerConnection(%s)" % uuid.uuid4()
@@ -58,8 +64,19 @@ async def webrtc(request):
         
         offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
         await pc.setRemoteDescription(offer)
+        
+        # Log the remote description
+        print("Remote description set:", pc.remoteDescription.sdp)
+        
         answer = await pc.createAnswer()
+        
+        # Log the created answer
+        print("Created answer:", answer.sdp)
+        
         await pc.setLocalDescription(answer)
+        
+        # Log the local description
+        print("Local description set:", pc.localDescription.sdp)
 
         return web.Response(
             content_type="application/json",
