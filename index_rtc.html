@@ -12,13 +12,20 @@
         const video = document.getElementById('video');
         const pc = new RTCPeerConnection();
 
+        pc.ontrack = (event) => {
+            video.srcObject = event.streams[0];
+        };
+
         async function start() {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
             const response = await fetch('/webrtc', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({ type: 'offer' })
+                body: JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp })
             });
 
             const data = await response.json();
@@ -38,10 +45,6 @@
                     id: data.id
                 })
             });
-
-            pc.ontrack = (event) => {
-                video.srcObject = event.streams[0];
-            };
         }
 
         start();
