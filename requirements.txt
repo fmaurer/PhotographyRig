@@ -1,0 +1,12 @@
+astropy==7.1.0
+astropy-iers-data==0.2025.6.9.14.9.37
+colorzero==2.0
+gpiozero==2.0.1
+lgpio==0.2.2.0
+numpy==2.3.0
+packaging==25.0
+pigpio==1.78
+pyerfa==2.0.1.5
+PyYAML==6.0.2
+RPi.GPIO==0.7.1
+websockets==15.0.1

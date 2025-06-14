@@ -8,3 +8,6 @@ class MotorController:
 
     def step_to_angle(self, degrees):
         self.driver.step_to_angle(degrees)
+    
+    def step_to(self, number):
+        self.driver.step_to(number)

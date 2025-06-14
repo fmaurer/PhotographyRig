@@ -7,9 +7,32 @@
             background-color: #1d1d1d;
         }
         #container { 
-            //background-color:Gray;
+            /* background-color: Gray; */
             width:800px;
             margin: 50px auto;
+        }
+
+        .camera-controls {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #333;
+            border-radius: 5px;
+        }
+
+        .camera-controls h2 {
+            color: gray;
+            margin: 0 0 10px 0;
+        }
+
+        .exposure-button {
+            display: inline-block;
+            margin: 6px;
+            width: 132px;
+            height: 40px;
+            background-color: gray;
+            font-size: 15px;
+            text-transform: uppercase;
+            font-weight: bold;
         }
 
         #capture-button{
@@ -45,7 +68,9 @@
 
         #stream-container {
             width:100%;
-            //background-color:black;
+            display: inline-block;
+            position: relative;
+            /* background-color: black; */
         }
 
         .half-panel{
@@ -91,23 +116,48 @@
 
         <div id="stream-container">
             <iframe src="http://bilbo.local:8889/cam1/"></iframe>
+            <div style="
+                position: absolute;
+                border: 1.5px solid red;
+                width: 9px;
+                height: 6px;
+                top: 107px;
+                left: 189px;
+            "></div>
             <div id="last-capture-container">
-                <img src="http://bilbo.local:8000/cam0_last.jpg">
+                <img id="last-capture" src="http://bilbo.local:8000/captures/cam0_last.jpg">
             </div>
-            <!--<iframe src="http://bilbo.local:8889/cam0/"></iframe> -->
+            <iframe src="http://bilbo.local:8889/cam0/"></iframe>
         </div>
 
-        <div class="half-panel">
+        <!-- Camera 0 Controls -->
+        <div class="camera-controls">
+            <h2>Camera 0 Controls</h2>
+            <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 0)">Daylight</button>
+            <button class="exposure-button" onclick="sendCommand('exposeinside', 0)">Inside</button>
+            <button class="exposure-button" onclick="sendCommand('capture', 0)">Take Photo</button>
+        </div>
+
+        <!-- Camera 1 Controls -->
+        <div class="camera-controls">
+            <h2>Camera 1 Controls</h2>
+            <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 1)">Daylight</button>
+            <button class="exposure-button" onclick="sendCommand('exposeinside', 1)">Inside</button>
+            <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>
+        </div>
+
+        <div class="half-panel" style="display:none">
             <h1>telemetry</h1>
         </div>
-        <div class="half-panel">
-            <div class="half-panel"><button onclick="sendCommand('pan', -1)">&#8678;</button></div>
-            <div class="half-panel"><button onclick="sendCommand('pan', 1)">&#8680;</button></div>
+        <div class="half-panel">            
+            <div class="half-panel"><button onclick="sendCommand('tilt', 300)">&#8681;</button></div>
+            <div class="half-panel"><button onclick="sendCommand('tilt', -300)">&#8679;</button></div>
+            
+            <div class="half-panel"><button onclick="sendCommand('pan', 150)">&#8678;</button></div>
+            <div class="half-panel"><button onclick="sendCommand('pan', -150)">&#8680;</button></div>
 
             <button class="hidden" onclick="sendCommand('tilt', 1)">Tilt Up</button>
             <button class="hidden" onclick="sendCommand('tilt', -1)">Tilt Down</button>
-
-            <button id="capture-button" onclick="sendCommand('capture', 0)">Take Photo</button>
         </div>
 
         <textarea id="console">
@@ -116,32 +166,214 @@
 
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/mediamtx-webrtc-player@1.0.4/mediamtx-webrtc-player.min.js"></script>
+
+    <div id="cam0-container">
+        <video id="cam0-video" autoplay playsinline></video>
+    </div>
+    <div id="cam1-container">
+        <video id="cam1-video" autoplay playsinline></video>
+    </div>
+
     <script>
         var socket = new WebSocket("ws://bilbo.local:8765");
 
-        socket.onopen = function(event) {
-            writeToConsole("Connection opened");
+        function connect(socket){
+            socket.onopen = function(event) {
+                writeToConsole("Connection opened");
+            };
+
+            socket.onmessage = function(event) {
+                receiveResponse(event.data);
+            };
+
+            socket.onerror = function(error) {
+                writeToConsole("Error: " + error.message);
+            };
+
+            socket.onclose = function(event) {
+                writeToConsole("Connection closed: " + (event.wasClean ? "clean" : "unclean") +
+                    ", Code: " + event.code + ", Reason: " + event.reason);
+
+                // Attempt to reconnect after 2 seconds
+                setTimeout(function() {
+                    writeToConsole("Attempting to reconnect...");
+                    connect();
+                }, 3000);
+            };
+        }
+        
+        // Start the initial connection
+        connect(socket);
+
+        async function startWebRTC(videoElement, path) {
+            // Don't try to reconnect if we're already connecting
+            if (webrtcConnections[path] && webrtcConnections[path].connecting) {
+                writeToConsole(`Already trying to connect ${path}, skipping...`);
+                return;
+            }
+
+            const pc = new RTCPeerConnection({
+                iceServers: []
+            });
+
+            // Get video element stream
+            pc.ontrack = (event) => {
+                if (event.track.kind === 'video') {
+                    videoElement.srcObject = event.streams[0];
+                }
+            };
+
+            // Handle connection state changes
+            pc.onconnectionstatechange = () => {
+                writeToConsole(`WebRTC connection state (${path}): ${pc.connectionState}`);
+                if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                    writeToConsole(`WebRTC connection failed for ${path}, will retry...`);
+                    // Set a longer delay for reconnection attempts
+                    setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
+                }
+            };
+
+            // Create WebSocket connection
+            const ws = new WebSocket(`ws://${window.location.hostname}:8889/${path}/webrtc`);
+
+            ws.onmessage = async (ev) => {
+                try {
+                    const msg = JSON.parse(ev.data);
+                    if (msg.type === 'answer') {
+                        await pc.setRemoteDescription(msg);
+                    } else if (msg.type === 'candidate') {
+                        await pc.addIceCandidate(msg);
+                    }
+                } catch (e) {
+                    writeToConsole(`WebRTC error (${path}): ${e.message}`);
+                }
+            };
+
+            ws.onerror = (error) => {
+                writeToConsole(`WebSocket error (${path}): Connection failed`);
+                // Don't try to reconnect immediately on error
+                webrtcConnections[path].connecting = false;
+            };
+
+            ws.onclose = () => {
+                writeToConsole(`WebSocket closed (${path})`);
+                // Only try to reconnect if we haven't already started a new connection
+                if (webrtcConnections[path] && !webrtcConnections[path].connecting) {
+                    setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
+                }
+                webrtcConnections[path].connecting = false;
+            };
+
+            // Add transceivers and create offer
+            pc.addTransceiver('video', {direction: 'recvonly'});
+            pc.addTransceiver('audio', {direction: 'recvonly'});
+            
+            try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // Wait for WebSocket to be ready
+                if (ws.readyState === WebSocket.CONNECTING) {
+                    await new Promise((resolve, reject) => {
+                        ws.onopen = resolve;
+                        setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
+                    });
+                }
+
+                // Send offer
+                ws.send(JSON.stringify({
+                    type: 'offer',
+                    sdp: pc.localDescription.sdp
+                }));
+
+                // Store connection state
+                webrtcConnections[path] = { pc, ws, connecting: false };
+                return webrtcConnections[path];
+            } catch (e) {
+                writeToConsole(`WebRTC setup error (${path}): ${e.message}`);
+                webrtcConnections[path] = { connecting: false };
+                throw e;
+            }
+        }
+
+        // Store WebRTC connections for cleanup
+        const webrtcConnections = {
+            cam0: null,
+            cam1: null
         };
 
-        socket.onmessage = function(event) {
-            receiveResponse(event.data);
-        };
+        async function reconnectWebRTC(videoElement, path) {
+            try {
+                // Don't try to reconnect if we're already connecting
+                if (webrtcConnections[path] && webrtcConnections[path].connecting) {
+                    writeToConsole(`Already reconnecting ${path}, skipping...`);
+                    return;
+                }
 
-        socket.onerror = function(error) {
-            writeToConsole("Error: " + error.message);
-        };
+                writeToConsole(`Starting reconnection for ${path}...`);
+                
+                // Mark as connecting
+                webrtcConnections[path] = { connecting: true };
 
-        socket.onclose = function(event) {
-            writeToConsole("Connection closed: " + (event.wasClean ? "clean" : "unclean") + ", Code: " + event.code + ", Reason: " + event.reason);
-        };
+                // Clean up existing connection
+                if (webrtcConnections[path]) {
+                    const { pc, ws } = webrtcConnections[path];
+                    if (pc) {
+                        pc.close();
+                    }
+                    if (ws && ws.readyState !== WebSocket.CLOSED) {
+                        ws.close();
+                    }
+                }
 
-        function sendCommand(command, degrees) {
-            msg = command + " " + degrees
+                // Create new connection
+                await startWebRTC(videoElement, path);
+                writeToConsole(`Reconnection completed for ${path}`);
+            } catch (e) {
+                writeToConsole(`WebRTC reconnection error (${path}): ${e.message}`);
+                // Mark as not connecting anymore
+                if (webrtcConnections[path]) {
+                    webrtcConnections[path].connecting = false;
+                }
+                // Try again after a longer delay
+                setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
+            }
+        }
+
+        function sendCommand(command, value) {
+            var msg = command + " " + value;
             if (socket.readyState === WebSocket.OPEN) {
                 socket.send(msg);
-                writeToConsole("SENT: " + msg)
+                writeToConsole("SENT: " + msg);
+
+                // If this is an exposure command, trigger WebRTC reconnect after a delay
+                if (command === 'exposeoutdoor' || command === 'exposeinside') {
+                    writeToConsole(`Waiting for camera ${value} to adjust exposure...`);
+                    setTimeout(() => {
+                        const videoElement = document.getElementById(`cam${value}-video`);
+                        if (videoElement) {
+                            writeToConsole(`Starting reconnection for camera ${value}...`);
+                            reconnectWebRTC(videoElement, `cam${value}`);
+                        }
+                    }, 3000); // Wait 3 seconds for camera to adjust
+                }
             } else {
                 writeToConsole("Cannot send command, socket is not open: " + msg);
+            }
+            
+            // If command starts with 'capture', set a timeout to update the image after 2 seconds
+            if (command.startsWith('capture')) {
+                setTimeout(function() {
+                    var imgElement = document.getElementById('last-capture');
+                    if (imgElement) {
+                        var timestamp = new Date().getTime();
+                        imgElement.src = './captures/cam' + value + '_last.jpg?' + timestamp;
+                        writeToConsole("Image updated for camera " + value);
+                    } else {
+                        writeToConsole("Image element not found.");
+                    }
+                }, 2000);
             }
         }
 
@@ -154,6 +386,15 @@
             consoleArea.value += "\n" + str;
             consoleArea.scrollTop = consoleArea.scrollHeight; // Scroll to the bottom
         }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await startWebRTC(document.getElementById('cam0-video'), 'cam0');
+                await startWebRTC(document.getElementById('cam1-video'), 'cam1');
+            } catch (e) {
+                console.error('Error starting WebRTC:', e);
+            }
+        });
     </script>
 </body>
 </html>
