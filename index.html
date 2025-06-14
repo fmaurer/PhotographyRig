@@ -115,7 +115,7 @@
         </div>
 
         <div id="stream-container">
-            <iframe src="http://bilbo.local:8889/cam1/"></iframe>
+            <iframe src="http://frodo.local:8889/cam1/"></iframe>
             <div style="
                 position: absolute;
                 border: 1.5px solid red;
@@ -125,9 +125,9 @@
                 left: 189px;
             "></div>
             <div id="last-capture-container">
-                <img id="last-capture" src="http://bilbo.local:8000/captures/cam0_last.jpg">
+                <img id="last-capture" src="http://frodo.local:8000/captures/cam0_last.jpg">
             </div>
-            <iframe src="http://bilbo.local:8889/cam0/"></iframe>
+            <iframe src="http://frodo.local:8889/cam0/"></iframe>
         </div>
 
         <!-- Camera 0 Controls -->
@@ -176,7 +176,7 @@
     </div>
 
     <script>
-        var socket = new WebSocket("ws://bilbo.local:8765");
+        var socket = new WebSocket("ws://frodo.local:8765");
 
         function connect(socket){
             socket.onopen = function(event) {

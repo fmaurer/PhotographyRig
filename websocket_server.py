@@ -256,10 +256,11 @@ class WebSocketServer:
                 self.motor_controller_tilt.set_ramp_profile(max_accel_steps=argument)
 
     def start_server(self):
-        start_server = websockets.serve(self.handler, "0.0.0.0", 8765)
-
-        asyncio.get_event_loop().run_until_complete(start_server)
-        asyncio.get_event_loop().run_forever()
+        async def start():
+            async with websockets.serve(self.handler, "0.0.0.0", 8765):
+                await asyncio.Future()  # run forever
+        
+        asyncio.run(start())
     
     def trigger_camera(self, idx):
         self.capture_process = self.capture_photo(idx)
@@ -338,7 +339,7 @@ class WebSocketServer:
     
     def start_file_server(self):
         """Start file server on next available port starting from 8000"""
-        port = 8000
+        port = 8001
         max_attempts = 10
         
         for port_attempt in range(port, port + max_attempts):
