@@ -36,7 +36,7 @@ def main():
  #   l298n_driver_1 = L298NDriver(pan_pins)
  #   l298n_driver_2 = L298NDriver(tilt_pins)
     tmc2208_driver = TMC2208Driver(STEP_PIN, DIR_PIN, ENABLE_PIN, 0.0004)
-    tmc2208_driver_2 = TMC2208Driver(STEP_PIN_TILT, DIR_PIN_TILT, ENABLE_PIN_TILT, 0.0001)
+    tmc2208_driver_2 = TMC2208Driver(STEP_PIN_TILT, DIR_PIN_TILT, ENABLE_PIN_TILT, 0.0004)
 
     # Initialize the motor controller with L298N driver
     pan_motor_controller = MotorController(tmc2208_driver)

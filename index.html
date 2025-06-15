@@ -118,11 +118,11 @@
             <iframe src="http://frodo.local:8889/cam1/"></iframe>
             <div style="
                 position: absolute;
-                border: 1.5px solid red;
+                border: 1px solid red;
                 width: 9px;
                 height: 6px;
-                top: 107px;
-                left: 189px;
+                top: 127px;
+                left: 196px;
             "></div>
             <div id="last-capture-container">
                 <img id="last-capture" src="http://frodo.local:8000/captures/cam0_last.jpg">
@@ -130,7 +130,6 @@
             <iframe src="http://frodo.local:8889/cam0/"></iframe>
         </div>
 
-        <!-- Camera 0 Controls -->
         <div class="camera-controls">
             <h2>Camera 0 Controls</h2>
             <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 0)">Daylight</button>
@@ -138,7 +137,6 @@
             <button class="exposure-button" onclick="sendCommand('capture', 0)">Take Photo</button>
         </div>
 
-        <!-- Camera 1 Controls -->
         <div class="camera-controls">
             <h2>Camera 1 Controls</h2>
             <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 1)">Daylight</button>
@@ -146,12 +144,42 @@
             <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>
         </div>
 
+        <!-- Fine Exposure Controls -->
+        <div class="camera-controls">
+            <h2>Fine Exposure Controls</h2>
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Camera:</label>
+                <select id="exposure-camera" style="background-color: #333; color: white; padding: 5px;">
+                    <option value="0">Camera 0</option>
+                    <option value="1">Camera 1</option>
+                </select>
+            </div>
+            
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">EV:</label>
+                <input type="number" id="ev-value" value="0" step="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
+                <button onclick="sendExposureCommand('ev')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Set EV</button>
+            </div>
+            
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Gain:</label>
+                <input type="number" id="gain-value" value="100" step="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
+                <button onclick="sendExposureCommand('gain')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Set Gain</button>
+            </div>
+            
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Aperture:</label>
+                <input type="number" id="aperture-value" value="200" step="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
+                <button onclick="sendExposureCommand('aperture')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Set Aperture</button>
+            </div>
+        </div>
+
         <div class="half-panel" style="display:none">
             <h1>telemetry</h1>
         </div>
         <div class="half-panel">            
-            <div class="half-panel"><button onclick="sendCommand('tilt', 300)">&#8681;</button></div>
-            <div class="half-panel"><button onclick="sendCommand('tilt', -300)">&#8679;</button></div>
+            <div class="half-panel"><button onclick="sendCommand('tilt', 150)">&#8681;</button></div>
+            <div class="half-panel"><button onclick="sendCommand('tilt', -150)">&#8679;</button></div>
             
             <div class="half-panel"><button onclick="sendCommand('pan', 150)">&#8678;</button></div>
             <div class="half-panel"><button onclick="sendCommand('pan', -150)">&#8680;</button></div>
@@ -342,39 +370,31 @@
         }
 
         function sendCommand(command, value) {
-            var msg = command + " " + value;
             if (socket.readyState === WebSocket.OPEN) {
-                socket.send(msg);
-                writeToConsole("SENT: " + msg);
-
-                // If this is an exposure command, trigger WebRTC reconnect after a delay
-                if (command === 'exposeoutdoor' || command === 'exposeinside') {
-                    writeToConsole(`Waiting for camera ${value} to adjust exposure...`);
-                    setTimeout(() => {
-                        const videoElement = document.getElementById(`cam${value}-video`);
-                        if (videoElement) {
-                            writeToConsole(`Starting reconnection for camera ${value}...`);
-                            reconnectWebRTC(videoElement, `cam${value}`);
-                        }
-                    }, 3000); // Wait 3 seconds for camera to adjust
-                }
+                socket.send(command + " " + value);
+                writeToConsole("Sent: " + command + " " + value);
             } else {
-                writeToConsole("Cannot send command, socket is not open: " + msg);
+                writeToConsole("WebSocket is not connected");
+            }
+        }
+
+        function sendExposureCommand(type) {
+            const camera = document.getElementById('exposure-camera').value;
+            let value;
+            
+            switch(type) {
+                case 'ev':
+                    value = document.getElementById('ev-value').value;
+                    break;
+                case 'gain':
+                    value = document.getElementById('gain-value').value;
+                    break;
+                case 'aperture':
+                    value = document.getElementById('aperture-value').value;
+                    break;
             }
             
-            // If command starts with 'capture', set a timeout to update the image after 2 seconds
-            if (command.startsWith('capture')) {
-                setTimeout(function() {
-                    var imgElement = document.getElementById('last-capture');
-                    if (imgElement) {
-                        var timestamp = new Date().getTime();
-                        imgElement.src = './captures/cam' + value + '_last.jpg?' + timestamp;
-                        writeToConsole("Image updated for camera " + value);
-                    } else {
-                        writeToConsole("Image element not found.");
-                    }
-                }, 2000);
-            }
+            sendCommand(type, value + " " + camera);
         }
 
         function receiveResponse(response){

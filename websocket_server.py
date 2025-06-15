@@ -211,49 +211,61 @@ class WebSocketServer:
         self.videostream_process = self.start_stream()
 
     async def handler(self, websocket):
-        async for message in websocket:
-            # Parse the message and call the appropriate motor controller method
-            command, argument = message.split()
-            argument = int(argument)
-
-            if command == "pan":
-                self.motor_controller.step_to(argument) #degrees
-            elif command == "tilt":
-                self.motor_controller_tilt.step_to(argument) #degrees
-            elif command == "capture":
-                self.trigger_camera(argument) #cam index
-            elif command == "shutter":
-                # Legacy command - sets shutter for both cameras
-                print("Warning: Using legacy shutter command. Consider using shutter0/shutter1 for specific cameras")
-                self.set_shutter_both(argument)
-            elif command == "shutter0":
-                self.set_shutter_single(0, argument)
-            elif command == "shutter1":
-                self.set_shutter_single(1, argument)
-            elif command == "exposeinside":
-                # Set indoor exposure (longer shutter) for specific camera
-                self.set_shutter_single(argument, 100000)  # 100ms shutter for indoor
-            elif command == "exposeoutdoor":
-                # Set outdoor exposure (shorter shutter) for specific camera
-                self.set_shutter_single(argument, 10000)   # 10ms shutter for outdoor
-            elif command == "camera":
-                self.set_camera(argument) #select camera index to stream from
-            elif command == "ramping":
-                if argument == 1:
-                    self.motor_controller.enable_ramping()
-                    self.motor_controller_tilt.enable_ramping()
+        """Handle incoming WebSocket messages."""
+        try:
+            async for message in websocket:
+                print(f"Received message: {message}")
+                parts = message.split()
+                if len(parts) < 2:
+                    await websocket.send("Error: Invalid command format")
+                    continue
+                    
+                command = parts[0]
+                if command in ['ev', 'gain', 'aperture']:
+                    if len(parts) != 3:
+                        await websocket.send(f"Error: {command} command requires value and camera number")
+                        continue
+                    value = int(parts[1])
+                    camera = int(parts[2])
+                    if command == 'ev':
+                        self.set_exposure_value(camera, value)
+                    elif command == 'gain':
+                        self.set_gain_value(camera, value)
+                    elif command == 'aperture':
+                        self.set_aperture_value(camera, value)
                 else:
-                    self.motor_controller.disable_ramping()
-                    self.motor_controller_tilt.disable_ramping()
-            elif command == "ramp_accel":
-                # Argument is percentage * 100 (e.g., 30 for 0.3)
-                accel_percent = argument / 100.0
-                self.motor_controller.set_ramp_profile(accel_percent=accel_percent)
-                self.motor_controller_tilt.set_ramp_profile(accel_percent=accel_percent)
-            elif command == "ramp_steps":
-                # Argument is direct number of steps
-                self.motor_controller.set_ramp_profile(max_accel_steps=argument)
-                self.motor_controller_tilt.set_ramp_profile(max_accel_steps=argument)
+                    # Handle two-part commands (original format)
+                    if len(parts) != 2:
+                        await websocket.send("Error: Command requires exactly one argument")
+                        continue
+                    command, argument = parts
+                    argument = int(argument)
+                    
+                    if command == "pan":
+                        self.motor_controller.step_to(argument)
+                    elif command == "tilt":
+                        self.motor_controller_tilt.step_to(argument)
+                    elif command == "capture":
+                        self.trigger_camera(argument)
+                    elif command == "shutter":
+                        await self.motor_controller.set_shutter_speed(argument)
+                    elif command == "exposeoutdoor":
+                        await self.motor_controller.set_exposure_outdoor(argument)
+                    elif command == "exposeinside":
+                        await self.motor_controller.set_exposure_inside(argument)
+                    elif command == "ev":
+                        self.set_exposure_value(camera, value)
+                    elif command == "gain":
+                        self.set_gain_value(camera, value)
+                    elif command == "aperture":
+                        self.set_aperture_value(camera, value)
+                    else:
+                        await websocket.send(f"Unknown command: {command}")
+        except websockets.exceptions.ConnectionClosed:
+            print("Client disconnected")
+        except Exception as e:
+            print(f"Error handling message: {e}")
+            await websocket.send(f"Error: {str(e)}")
 
     def start_server(self):
         async def start():
@@ -263,6 +275,10 @@ class WebSocketServer:
         asyncio.run(start())
     
     def trigger_camera(self, idx):
+        # Stop the video stream before taking a photo
+        self.stop_stream()
+        
+        # Take the photo
         self.capture_process = self.capture_photo(idx)
         self.capture_process.wait()
         
@@ -270,6 +286,10 @@ class WebSocketServer:
         os.symlink(os.path.basename(self.last_photo_path), self.last_symlink_path)
 
         print("Photo saved to disk, process completed")
+        
+        # Restart the video stream
+        self.videostream_process = self.start_stream()
+        print("Video stream restarted")
     
     def update_shutter_value(self, yml_file_path, new_shutter_value):
         # Load the YAML file
@@ -407,4 +427,97 @@ class WebSocketServer:
         if self.file_server:
             self.file_server.terminate()
         sys.exit(0)
+
+    def set_exposure_value(self, camera_index, ev_value):
+        """Set exposure value for a specific camera"""
+        print(f"Setting camera {camera_index} EV to: {ev_value}")
+        try:
+            self.stop_stream()
+            mediamtx_dir = os.path.expanduser('./mediamtx')
+            config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
+            
+            with open(config_path, 'r') as file:
+                data = yaml.safe_load(file)
+            
+            camera_path = f'cam{camera_index}'
+            if camera_path in data['paths']:
+                command = data['paths'][camera_path]['runOnInit']
+                # Add EV control to the command
+                updated_command = command.replace('rpicam-vid', f'rpicam-vid --ev {ev_value}')
+                data['paths'][camera_path]['runOnInit'] = updated_command
+                
+                with open(config_path, 'w') as file:
+                    yaml.dump(data, file, default_flow_style=False)
+            
+            self.videostream_process = self.start_stream()
+            print(f"Camera {camera_index} EV updated to {ev_value}")
+            
+        except Exception as e:
+            print(f"Error setting EV for camera {camera_index}: {str(e)}")
+            try:
+                self.videostream_process = self.start_stream()
+            except:
+                pass
+
+    def set_gain_value(self, camera_index, gain_value):
+        """Set gain value for a specific camera"""
+        print(f"Setting camera {camera_index} gain to: {gain_value}")
+        try:
+            self.stop_stream()
+            mediamtx_dir = os.path.expanduser('./mediamtx')
+            config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
+            
+            with open(config_path, 'r') as file:
+                data = yaml.safe_load(file)
+            
+            camera_path = f'cam{camera_index}'
+            if camera_path in data['paths']:
+                command = data['paths'][camera_path]['runOnInit']
+                # Add gain control to the command
+                updated_command = command.replace('rpicam-vid', f'rpicam-vid --gain {gain_value}')
+                data['paths'][camera_path]['runOnInit'] = updated_command
+                
+                with open(config_path, 'w') as file:
+                    yaml.dump(data, file, default_flow_style=False)
+            
+            self.videostream_process = self.start_stream()
+            print(f"Camera {camera_index} gain updated to {gain_value}")
+            
+        except Exception as e:
+            print(f"Error setting gain for camera {camera_index}: {str(e)}")
+            try:
+                self.videostream_process = self.start_stream()
+            except:
+                pass
+
+    def set_aperture_value(self, camera_index, aperture_value):
+        """Set aperture value for a specific camera"""
+        print(f"Setting camera {camera_index} aperture to: f/{aperture_value}")
+        try:
+            self.stop_stream()
+            mediamtx_dir = os.path.expanduser('./mediamtx')
+            config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
+            
+            with open(config_path, 'r') as file:
+                data = yaml.safe_load(file)
+            
+            camera_path = f'cam{camera_index}'
+            if camera_path in data['paths']:
+                command = data['paths'][camera_path]['runOnInit']
+                # Add aperture control to the command
+                updated_command = command.replace('rpicam-vid', f'rpicam-vid --aperture {aperture_value}')
+                data['paths'][camera_path]['runOnInit'] = updated_command
+                
+                with open(config_path, 'w') as file:
+                    yaml.dump(data, file, default_flow_style=False)
+            
+            self.videostream_process = self.start_stream()
+            print(f"Camera {camera_index} aperture updated to f/{aperture_value}")
+            
+        except Exception as e:
+            print(f"Error setting aperture for camera {camera_index}: {str(e)}")
+            try:
+                self.videostream_process = self.start_stream()
+            except:
+                pass
 
