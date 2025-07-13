@@ -105,6 +105,32 @@
             height: 161px;
             border-top: 24px solid #dedede;
         }
+
+        #shutdown-button {
+            background-color: #b80000 !important;
+            color: white !important;
+            padding: 15px 30px !important;
+            font-size: 18px !important;
+            font-weight: bold !important;
+            border: none !important;
+            border-radius: 5px !important;
+            cursor: pointer !important;
+            margin: 10px 0 !important;
+            transition: all 0.3s ease !important;
+        }
+
+        #shutdown-button:hover {
+            background-color: #8b0000 !important;
+            transform: scale(1.05) !important;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important;
+        }
+
+        #shutdown-button:disabled {
+            background-color: #666 !important;
+            cursor: not-allowed !important;
+            transform: none !important;
+            box-shadow: none !important;
+        }
     </style>
 </head>
 <body>
@@ -116,12 +142,24 @@
 
         <div id="stream-container">
             <iframe src="http://frodo.local:8889/cam1/"></iframe>
+            <!-- Add transparent overlay for click detection -->
+            <div id="cam1-overlay" style="
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 365px;
+                height: 206px;
+                background: transparent;
+                cursor: crosshair;
+                z-index: 10;
+                display: none;
+            "></div>
             <div style="
                 position: absolute;
                 border: 1px solid red;
                 width: 9px;
                 height: 6px;
-                top: 127px;
+                top: 97px;
                 left: 196px;
             "></div>
             <div id="last-capture-container">
@@ -130,18 +168,28 @@
             <iframe src="http://frodo.local:8889/cam0/"></iframe>
         </div>
 
+        <!-- Camera Controls -->
         <div class="camera-controls">
             <h2>Camera 0 Controls</h2>
-            <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 0)">Daylight</button>
-            <button class="exposure-button" onclick="sendCommand('exposeinside', 0)">Inside</button>
+            <!-- <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 0)">Daylight</button>
+            <button class="exposure-button" onclick="sendCommand('exposeinside', 0)">Inside</button>-->
             <button class="exposure-button" onclick="sendCommand('capture', 0)">Take Photo</button>
+            <button class="exposure-button" onclick="refreshCapturedImage()">&#x21BA; Refresh Image</button>
         </div>
-
+ 
         <div class="camera-controls">
             <h2>Camera 1 Controls</h2>
-            <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 1)">Daylight</button>
+            <!--<button class="exposure-button" onclick="sendCommand('exposeoutdoor', 1)">Daylight</button>
             <button class="exposure-button" onclick="sendCommand('exposeinside', 1)">Inside</button>
-            <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>
+            <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>-->
+        </div>
+        
+        <!-- System Controls -->
+        <div class="camera-controls">
+            <h2>System Controls</h2>
+            <button id="shutdown-button" onclick="sendShutdownCommand()">
+                &#x26D4; SHUTDOWN SYSTEM
+            </button>
         </div>
 
         <!-- Fine Exposure Controls -->
@@ -171,6 +219,54 @@
                 <label style="color: gray; margin-right: 10px;">Aperture:</label>
                 <input type="number" id="aperture-value" value="200" step="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
                 <button onclick="sendExposureCommand('aperture')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Set Aperture</button>
+            </div>
+        </div>
+
+        <!-- Stepper Motor Controls -->
+        <div class="camera-controls">
+            <h2>Stepper Motor Controls</h2>
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Pan Amount:</label>
+                <input type="number" id="pan-amount" value="50" step="1" style="width: 80px; background-color: #333; color: white; padding: 5px;">
+                <button onclick="sendStepperCommand('pan')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Pan Left</button>
+                <button onclick="sendStepperCommand('pan', true)" style="background-color: gray; color: white; padding: 5px; margin-left: 5px;">Pan Right</button>
+            </div>
+            
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Tilt Amount:</label>
+                <input type="number" id="tilt-amount" value="50" step="1" style="width: 80px; background-color: #333; color: white; padding: 5px;">
+                <button onclick="sendStepperCommand('tilt')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Tilt Up</button>
+                <button onclick="sendStepperCommand('tilt', true)" style="background-color: gray; color: white; padding: 5px; margin-left: 5px;">Tilt Down</button>
+            </div>
+            
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Click-to-Move:</label>
+                <button onclick="toggleClickToMove()" id="click-to-move-btn" style="background-color: #4CAF50; color: white; padding: 5px; margin-left: 10px;">Enable Click-to-Move</button>
+                <span id="click-status" style="color: gray; margin-left: 10px;">Disabled</span>
+            </div>
+        </div>
+
+        <!-- Calibration Controls -->
+        <div class="camera-controls" id="calibration-controls" style="display: none;">
+            <h2>Calibration Controls</h2>
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Grid Size:</label>
+                <input type="number" id="grid-rows" value="3" min="2" max="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
+                <span style="color: gray; margin: 0 5px;">x</span>
+                <input type="number" id="grid-cols" value="3" min="2" max="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
+                <button onclick="startCalibration()" style="background-color: #FF9800; color: white; padding: 5px; margin-left: 10px;">Start Calibration</button>
+                <button onclick="saveCalibration()" style="background-color: #2196F3; color: white; padding: 5px; margin-left: 5px;">Save Calibration</button>
+            </div>
+            
+            <div id="calibration-status" style="color: gray; margin-bottom: 10px;">
+                Click on grid points in order to calibrate the mapping
+            </div>
+            
+            <div id="calibration-progress" style="margin-bottom: 10px;">
+                <div style="background-color: #333; height: 20px; border-radius: 10px; overflow: hidden;">
+                    <div id="progress-bar" style="background-color: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                </div>
+                <span id="progress-text" style="color: gray; font-size: 12px;">0 / 0 points calibrated</span>
             </div>
         </div>
 
@@ -373,6 +469,11 @@
             if (socket.readyState === WebSocket.OPEN) {
                 socket.send(command + " " + value);
                 writeToConsole("Sent: " + command + " " + value);
+                
+                // If this is a capture command, refresh the image after a delay
+                if (command === 'capture') {
+                    setTimeout(refreshCapturedImage, 2000); // Wait 2 seconds for photo to be saved
+                }
             } else {
                 writeToConsole("WebSocket is not connected");
             }
@@ -397,6 +498,33 @@
             sendCommand(type, value + " " + camera);
         }
 
+        function sendStepperCommand(type, reverse = false) {
+            const amount = document.getElementById(`${type}-amount`).value;
+            const direction = reverse ? -1 : 1;
+            const value = direction * parseInt(amount);
+            sendCommand(type, value);
+        }
+
+        function sendShutdownCommand() {
+            if (confirm("Are you sure you want to shutdown the system? This will stop all camera streams and processes.")) {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send("shutdown");
+                    writeToConsole("Sent: shutdown command");
+                    
+                    // Disable the shutdown button to prevent multiple clicks
+                    const shutdownButton = document.getElementById('shutdown-button');
+                    shutdownButton.disabled = true;
+                    shutdownButton.innerHTML = "&#x21BA; SHUTTING DOWN...";
+                    shutdownButton.style.backgroundColor = "#666";
+                    
+                    // Show shutdown message
+                    writeToConsole("System shutdown initiated...");
+                } else {
+                    writeToConsole("WebSocket is not connected - cannot send shutdown command");
+                }
+            }
+        }
+
         function receiveResponse(response){
             writeToConsole(response)
         }
@@ -407,14 +535,323 @@
             consoleArea.scrollTop = consoleArea.scrollHeight; // Scroll to the bottom
         }
 
+        function refreshCapturedImage() {
+            const lastCaptureImg = document.getElementById('last-capture');
+            const currentSrc = lastCaptureImg.src;
+            
+            // Remove any existing timestamp parameters and add a new one
+            let newSrc = currentSrc;
+            
+            // Remove existing timestamp parameters
+            newSrc = newSrc.replace(/[?&]t=\d+/g, '');
+            
+            // Add new timestamp parameter
+            const separator = newSrc.includes('?') ? '&' : '?';
+            newSrc = newSrc + separator + 't=' + Date.now();
+            
+            lastCaptureImg.src = newSrc;
+            
+            writeToConsole("Refreshing captured image...");
+        }
+
+        // Click-to-Move and Calibration Variables
+        let clickToMoveEnabled = false;
+        let calibrationMode = false;
+        let calibrationPoints = [];
+        let currentCalibrationPoint = 0;
+        let totalCalibrationPoints = 0;
+        let stepperMapping = null;
+
+        // Add click event listener to overlay instead of iframe
+        function setupClickToMove() {
+            const overlay = document.getElementById('cam1-overlay');
+            if (overlay) {
+                overlay.addEventListener('click', handleCam1Click);
+                overlay.style.display = clickToMoveEnabled ? 'block' : 'none';
+                writeToConsole("Click-to-move enabled for cam1 overlay");
+            }
+        }
+
+        function handleCam1Click(event) {
+            if (!clickToMoveEnabled) return;
+            
+            const overlay = event.target;
+            const rect = overlay.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            // Normalize coordinates to 0-1 range
+            const normalizedX = x / rect.width;
+            const normalizedY = y / rect.height;
+            
+            // Add visual feedback
+            showClickIndicator(x, y);
+            
+            if (calibrationMode) {
+                handleCalibrationClick(normalizedX, normalizedY);
+            } else {
+                handleMoveClick(normalizedX, normalizedY);
+            }
+        }
+
+        function showClickIndicator(x, y) {
+            // Create a temporary visual indicator
+            const indicator = document.createElement('div');
+            indicator.style.cssText = `
+                position: absolute;
+                left: ${x}px;
+                top: ${y}px;
+                width: 10px;
+                height: 10px;
+                background: red;
+                border-radius: 50%;
+                pointer-events: none;
+                z-index: 20;
+                transform: translate(-50%, -50%);
+            `;
+            
+            const overlay = document.getElementById('cam1-overlay');
+            overlay.appendChild(indicator);
+            
+            // Remove indicator after 1 second
+            setTimeout(() => {
+                if (indicator.parentNode) {
+                    indicator.parentNode.removeChild(indicator);
+                }
+            }, 1000);
+        }
+
+        function handleMoveClick(x, y) {
+            if (!stepperMapping) {
+                writeToConsole("No calibration data available. Please calibrate first.");
+                return;
+            }
+            
+            try {
+                const [panSteps, tiltSteps] = stepperMapping.get_steps(x, y);
+                writeToConsole(`Moving to (${x.toFixed(3)}, ${y.toFixed(3)}) - Pan: ${panSteps}, Tilt: ${tiltSteps}`);
+                
+                // Send pan and tilt commands
+                sendCommand('pan', panSteps);
+                sendCommand('tilt', tiltSteps);
+            } catch (error) {
+                writeToConsole(`Error calculating steps: ${error.message}`);
+            }
+        }
+
+        function toggleClickToMove() {
+            clickToMoveEnabled = !clickToMoveEnabled;
+            const btn = document.getElementById('click-to-move-btn');
+            const status = document.getElementById('click-status');
+            const calibrationControls = document.getElementById('calibration-controls');
+            const overlay = document.getElementById('cam1-overlay');
+            
+            if (clickToMoveEnabled) {
+                btn.textContent = 'Disable Click-to-Move';
+                btn.style.backgroundColor = '#f44336';
+                status.textContent = 'Enabled';
+                status.style.color = '#4CAF50';
+                calibrationControls.style.display = 'block';
+                overlay.style.display = 'block';
+                setupClickToMove();
+            } else {
+                btn.textContent = 'Enable Click-to-Move';
+                btn.style.backgroundColor = '#4CAF50';
+                status.textContent = 'Disabled';
+                status.style.color = 'gray';
+                calibrationControls.style.display = 'none';
+                overlay.style.display = 'none';
+                if (calibrationMode) {
+                    stopCalibration();
+                }
+            }
+        }
+
+        function startCalibration() {
+            const rows = parseInt(document.getElementById('grid-rows').value);
+            const cols = parseInt(document.getElementById('grid-cols').value);
+            
+            calibrationMode = true;
+            calibrationPoints = [];
+            currentCalibrationPoint = 0;
+            totalCalibrationPoints = rows * cols;
+            
+            updateCalibrationProgress();
+            updateCalibrationStatus(`Click on grid point ${currentCalibrationPoint + 1} of ${totalCalibrationPoints}`);
+            
+            writeToConsole(`Starting calibration with ${rows}x${cols} grid (${totalCalibrationPoints} points)`);
+        }
+
+        function handleCalibrationClick(x, y) {
+            if (!calibrationMode) return;
+            
+            // Calculate grid position
+            const rows = parseInt(document.getElementById('grid-rows').value);
+            const cols = parseInt(document.getElementById('grid-cols').value);
+            const row = Math.floor(currentCalibrationPoint / cols);
+            const col = currentCalibrationPoint % cols;
+            
+            // Store calibration point (x, y, pan_steps, tilt_steps)
+            // For now, we'll use simple linear mapping - you can improve this
+            const panSteps = Math.round((x - 0.5) * 1000); // -500 to 500 steps
+            const tiltSteps = Math.round((0.5 - y) * 1000); // -500 to 500 steps
+            
+            calibrationPoints.push([x, y, panSteps, tiltSteps]);
+            
+            writeToConsole(`Calibration point ${currentCalibrationPoint + 1}: (${x.toFixed(3)}, ${y.toFixed(3)}) -> Pan: ${panSteps}, Tilt: ${tiltSteps}`);
+            
+            currentCalibrationPoint++;
+            updateCalibrationProgress();
+            
+            if (currentCalibrationPoint >= totalCalibrationPoints) {
+                finishCalibration();
+            } else {
+                updateCalibrationStatus(`Click on grid point ${currentCalibrationPoint + 1} of ${totalCalibrationPoints}`);
+            }
+        }
+
+        function finishCalibration() {
+            calibrationMode = false;
+            updateCalibrationStatus('Calibration complete! Click "Save Calibration" to store the mapping.');
+            writeToConsole('Calibration completed successfully');
+            
+            // Create stepper mapping object
+            const rows = parseInt(document.getElementById('grid-rows').value);
+            const cols = parseInt(document.getElementById('grid-cols').value);
+            stepperMapping = new StepperMapping(calibrationPoints, [rows, cols]);
+        }
+
+        function stopCalibration() {
+            calibrationMode = false;
+            updateCalibrationStatus('Calibration cancelled');
+            writeToConsole('Calibration cancelled');
+        }
+
+        function updateCalibrationProgress() {
+            const progress = (currentCalibrationPoint / totalCalibrationPoints) * 100;
+            document.getElementById('progress-bar').style.width = progress + '%';
+            document.getElementById('progress-text').textContent = `${currentCalibrationPoint} / ${totalCalibrationPoints} points calibrated`;
+        }
+
+        function updateCalibrationStatus(message) {
+            document.getElementById('calibration-status').textContent = message;
+        }
+
+        function saveCalibration() {
+            if (!stepperMapping) {
+                writeToConsole('No calibration data to save');
+                return;
+            }
+            
+            // Save to localStorage for now - you can extend this to save to server
+            const calibrationData = {
+                points: calibrationPoints,
+                gridShape: [parseInt(document.getElementById('grid-rows').value), parseInt(document.getElementById('grid-cols').value)],
+                timestamp: Date.now()
+            };
+            
+            localStorage.setItem('stepperCalibration', JSON.stringify(calibrationData));
+            writeToConsole('Calibration saved to browser storage');
+        }
+
+        function loadCalibration() {
+            const saved = localStorage.getItem('stepperCalibration');
+            if (saved) {
+                try {
+                    const data = JSON.parse(saved);
+                    calibrationPoints = data.points;
+                    document.getElementById('grid-rows').value = data.gridShape[0];
+                    document.getElementById('grid-cols').value = data.gridShape[1];
+                    stepperMapping = new StepperMapping(calibrationPoints, data.gridShape);
+                    writeToConsole('Calibration loaded from storage');
+                } catch (error) {
+                    writeToConsole('Error loading calibration: ' + error.message);
+                }
+            }
+        }
+
+        // Simple StepperMapping class (you can replace this with your existing one)
+        class StepperMapping {
+            constructor(calibrationPoints, gridShape) {
+                this.points = calibrationPoints;
+                this.gridShape = gridShape;
+            }
+            
+            get_steps(x, y) {
+                // Simple nearest neighbor interpolation for now
+                // You can implement bilinear interpolation as in your StepperMapping.py
+                let minDist = Infinity;
+                let bestPoint = null;
+                
+                for (const point of this.points) {
+                    const [px, py, panSteps, tiltSteps] = point;
+                    const dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        bestPoint = point;
+                    }
+                }
+                
+                if (bestPoint) {
+                    return [bestPoint[2], bestPoint[3]]; // pan, tilt steps
+                }
+                
+                return [0, 0];
+            }
+        }
+
+        // Load calibration on page load
         document.addEventListener('DOMContentLoaded', async () => {
             try {
+                // Detect HTTP server port and update image source
+                await detectAndUpdatePort();
+                
                 await startWebRTC(document.getElementById('cam0-video'), 'cam0');
                 await startWebRTC(document.getElementById('cam1-video'), 'cam1');
+                
+                // Load saved calibration
+                loadCalibration();
             } catch (e) {
                 console.error('Error starting WebRTC:', e);
             }
         });
+
+        async function detectAndUpdatePort() {
+            // Try to detect the HTTP server port
+            const ports = [8000, 8001, 8002, 8003, 8004];
+            
+            for (const port of ports) {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 1000);
+                    
+                    const response = await fetch(`http://frodo.local:${port}/port-info`, {
+                        method: 'GET',
+                        signal: controller.signal
+                    });
+                    
+                    clearTimeout(timeoutId);
+                    
+                    if (response.ok) {
+                        const data = await response.json();
+                        const detectedPort = data.port;
+                        
+                        // Update the image source
+                        const lastCaptureImg = document.getElementById('last-capture');
+                        lastCaptureImg.src = `http://frodo.local:${detectedPort}/captures/cam0_last.jpg`;
+                        
+                        writeToConsole(`HTTP server detected on port ${detectedPort}`);
+                        return;
+                    }
+                } catch (e) {
+                    // Continue to next port
+                    continue;
+                }
+            }
+            
+            // If no port detected, keep default (8000)
+            writeToConsole("Could not detect HTTP server port, using default (8000)");
+        }
     </script>
 </body>
 </html>
