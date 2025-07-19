@@ -9,14 +9,17 @@ import time
 import socket
 import signal
 import sys
+import threading
 
 class WebSocketServer:
     def __init__(self, motor_controller, motor_controller2):
         self.SYMLINK_PATH = '/home/frodo/PhotographyRig/captures/'
         self.motor_controller = motor_controller
         self.motor_controller_tilt = motor_controller2
-        self.file_server = self.start_file_server()
-        print("File server started")
+        
+        # Remove redundant file server - main.py already handles this
+        # self.file_server = self.start_file_server()
+        # print("File server started")
         
         # Initialize single video stream process
         self.videostream_process = None
@@ -106,7 +109,6 @@ class WebSocketServer:
                                '-i /dev/stdin -c:v libx264 -preset ultrafast '
                                '-tune zerolatency -profile:v baseline '
                                '-b:v 1M -maxrate 1M -bufsize 500k '
-                               '-g 30 -keyint_min 30 '
                                '-rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam0\'',
                     'runOnInitRestart': True
                 },
@@ -115,12 +117,11 @@ class WebSocketServer:
                     'sourceProtocol': 'tcp',
                     'runOnInit': 'bash -c \'rpicam-vid -t 0 --camera 1 --nopreview '
                                '--codec yuv420 --width 1280 --height 720 --inline '
-                               '--listen --shutter 100000 --level 3.1 -o - | '
+                               '--listen --shutter 5000 --level 3.1 -o - | '
                                'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1280x720 '
                                '-i /dev/stdin -c:v libx264 -preset ultrafast '
                                '-tune zerolatency -profile:v baseline '
                                '-b:v 1M -maxrate 1M -bufsize 500k '
-                               '-g 30 -keyint_min 30 '
                                '-rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam1\'',
                     'runOnInitRestart': True
                 }
@@ -216,12 +217,18 @@ class WebSocketServer:
             async for message in websocket:
                 print(f"Received message: {message}")
                 parts = message.split()
-                if len(parts) < 2:
-                    await websocket.send("Error: Invalid command format")
+                if len(parts) < 1:
+                    await websocket.send("Error: Empty message")
                     continue
                     
                 command = parts[0]
-                if command in ['ev', 'gain', 'aperture']:
+                if command == "shutdown":
+                    # Handle shutdown command (no parameters needed)
+                    await websocket.send("Shutting down server...")
+                    print("Shutdown command received from WebSocket client")
+                    await self.graceful_shutdown()
+                    return  # Exit the handler
+                elif command in ['ev', 'gain', 'aperture']:
                     if len(parts) != 3:
                         await websocket.send(f"Error: {command} command requires value and camera number")
                         continue
@@ -242,9 +249,11 @@ class WebSocketServer:
                     argument = int(argument)
                     
                     if command == "pan":
-                        self.motor_controller.step_to(argument)
+                        pan_thread = threading.Thread(target=self.motor_controller.step_to, args=(argument,))
+                        pan_thread.start()
                     elif command == "tilt":
-                        self.motor_controller_tilt.step_to(argument)
+                        tilt_thread = threading.Thread(target=self.motor_controller_tilt.step_to, args=(argument,))
+                        tilt_thread.start()
                     elif command == "capture":
                         self.trigger_camera(argument)
                     elif command == "shutter":
@@ -253,12 +262,18 @@ class WebSocketServer:
                         await self.motor_controller.set_exposure_outdoor(argument)
                     elif command == "exposeinside":
                         await self.motor_controller.set_exposure_inside(argument)
-                    elif command == "ev":
-                        self.set_exposure_value(camera, value)
-                    elif command == "gain":
-                        self.set_gain_value(camera, value)
-                    elif command == "aperture":
-                        self.set_aperture_value(camera, value)
+                    elif command == "move":  # New combined command
+                        if len(parts) != 3:
+                            await websocket.send("Error: move command requires pan and tilt values")
+                            continue
+                        pan_arg = int(parts[1])
+                        tilt_arg = int(parts[2])
+                        
+                        # Start both movements simultaneously
+                        pan_thread = threading.Thread(target=self.motor_controller.step_to, args=(pan_arg,))
+                        tilt_thread = threading.Thread(target=self.motor_controller_tilt.step_to, args=(tilt_arg,))
+                        pan_thread.start()
+                        tilt_thread.start()
                     else:
                         await websocket.send(f"Unknown command: {command}")
         except websockets.exceptions.ConnectionClosed:
@@ -266,6 +281,62 @@ class WebSocketServer:
         except Exception as e:
             print(f"Error handling message: {e}")
             await websocket.send(f"Error: {str(e)}")
+
+    async def graceful_shutdown(self):
+        """Perform graceful shutdown of all processes"""
+        print("Starting graceful shutdown...")
+        
+        # Stop video streams
+        self.stop_stream()
+        
+        # Stop capture process if running
+        if self.capture_process:
+            print("Stopping capture process...")
+            self.capture_process.terminate()
+            try:
+                self.capture_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print("Capture process did not terminate gracefully, forcing stop...")
+                self.capture_process.kill()
+        
+        # Kill any remaining rpicam processes
+        print("Cleaning up any remaining camera processes...")
+        subprocess.run("pkill -TERM -f rpicam-vid", shell=True)
+        subprocess.run("pkill -TERM -f rpicam-still", shell=True)
+        subprocess.run("pkill -TERM -f ffmpeg", shell=True)
+        subprocess.run("pkill -TERM -f mediamtx", shell=True)
+        
+        # Kill any Python HTTP servers (main.py HTTP server)
+        print("Cleaning up HTTP servers...")
+        subprocess.run("pkill -TERM -f 'python -m http.server'", shell=True)
+        subprocess.run("pkill -TERM -f 'SimpleHTTPRequestHandler'", shell=True)
+        subprocess.run("pkill -TERM -f 'TCPServer'", shell=True)
+        
+        # Kill any processes using common ports
+        print("Cleaning up processes on common ports...")
+        subprocess.run("fuser -k 8000/tcp 2>/dev/null || true", shell=True)
+        subprocess.run("fuser -k 8001/tcp 2>/dev/null || true", shell=True)
+        subprocess.run("fuser -k 8765/tcp 2>/dev/null || true", shell=True)
+        subprocess.run("fuser -k 8554/tcp 2>/dev/null || true", shell=True)
+        subprocess.run("fuser -k 8889/tcp 2>/dev/null || true", shell=True)
+        
+        # Small delay to let processes terminate
+        time.sleep(2)
+        
+        # Force kill if still running
+        subprocess.run("pkill -9 -f rpicam-vid", shell=True)
+        subprocess.run("pkill -9 -f rpicam-still", shell=True)
+        subprocess.run("pkill -9 -f ffmpeg", shell=True)
+        subprocess.run("pkill -9 -f mediamtx", shell=True)
+        subprocess.run("pkill -9 -f 'python -m http.server'", shell=True)
+        subprocess.run("pkill -9 -f 'SimpleHTTPRequestHandler'", shell=True)
+        subprocess.run("pkill -9 -f 'TCPServer'", shell=True)
+        
+        print("Graceful shutdown completed")
+        print("All processes terminated. Exiting...")
+        
+        # Use os._exit() instead of sys.exit() to avoid asyncio issues
+        os._exit(0)
 
     def start_server(self):
         async def start():
@@ -350,31 +421,11 @@ class WebSocketServer:
         # Execute the command and wait for it to complete
         return subprocess.Popen(photo_command, shell=True)
 
-        
-
     def create_symlink(self, file_path):
         #if os.path.islink(self.SYMLINK_PATH):
         #    os.unlink(self.SYMLINK_PATH)
         os.symlink(self.SYMLINK_PATH+file_path, self.SYMLINK_PATH+'cam0_last.jpg')
     
-    def start_file_server(self):
-        """Start file server on next available port starting from 8000"""
-        port = 8001
-        max_attempts = 10
-        
-        for port_attempt in range(port, port + max_attempts):
-            try:
-                server_command = f'python -m http.server --directory ./captures {port_attempt}'
-                process = subprocess.Popen(server_command, shell=True)
-                print(f"File server started on port {port_attempt}")
-                return process
-            except Exception as e:
-                print(f"Failed to start file server on port {port_attempt}: {e}")
-                if port_attempt == port + max_attempts - 1:
-                    print("Failed to find available port for file server")
-                    return None
-        return None
-
     def set_shutter_single(self, camera_index, shutter_value):
         """Set shutter speed for a specific camera"""
         print(f"Setting camera {camera_index} shutter to: {shutter_value}")
@@ -424,8 +475,6 @@ class WebSocketServer:
         """Handle shutdown signals gracefully"""
         print("\nShutdown signal received, cleaning up...")
         self.stop_stream()
-        if self.file_server:
-            self.file_server.terminate()
         sys.exit(0)
 
     def set_exposure_value(self, camera_index, ev_value):
