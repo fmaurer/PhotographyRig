@@ -59,7 +59,6 @@
 
         #stream-container iframe, #last-capture-container{
             width: 365px;
-            margin-left: 19px;
             height: 206px;
         }
         #stream-container iframe:nth-child(2), #last-capture-container{
@@ -154,13 +153,21 @@
                 z-index: 10;
                 display: none;
             "></div>
-            <div style="
+            <div id="red-zoom-indicator" style="
                 position: absolute;
                 border: 1px solid red;
                 width: 9px;
                 height: 6px;
-                top: 97px;
-                left: 196px;
+                top: 90px;
+                left: 183px;
+            "></div>
+            <div id="green-center-indicator" style="
+                position: absolute;
+                border: 1px solid rgb(0, 135, 29);
+                width: 9px;
+                height: 6px;
+                top: 100px;
+                left: 178px;
             "></div>
             <div id="last-capture-container">
                 <img id="last-capture" src="http://frodo.local:8000/captures/cam0_last.jpg">
@@ -192,36 +199,6 @@
             </button>
         </div>
 
-        <!-- Fine Exposure Controls -->
-        <div class="camera-controls">
-            <h2>Fine Exposure Controls</h2>
-            <div style="margin-bottom: 10px;">
-                <label style="color: gray; margin-right: 10px;">Camera:</label>
-                <select id="exposure-camera" style="background-color: #333; color: white; padding: 5px;">
-                    <option value="0">Camera 0</option>
-                    <option value="1">Camera 1</option>
-                </select>
-            </div>
-            
-            <div style="margin-bottom: 10px;">
-                <label style="color: gray; margin-right: 10px;">EV:</label>
-                <input type="number" id="ev-value" value="0" step="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
-                <button onclick="sendExposureCommand('ev')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Set EV</button>
-            </div>
-            
-            <div style="margin-bottom: 10px;">
-                <label style="color: gray; margin-right: 10px;">Gain:</label>
-                <input type="number" id="gain-value" value="100" step="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
-                <button onclick="sendExposureCommand('gain')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Set Gain</button>
-            </div>
-            
-            <div style="margin-bottom: 10px;">
-                <label style="color: gray; margin-right: 10px;">Aperture:</label>
-                <input type="number" id="aperture-value" value="200" step="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
-                <button onclick="sendExposureCommand('aperture')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Set Aperture</button>
-            </div>
-        </div>
-
         <!-- Stepper Motor Controls -->
         <div class="camera-controls">
             <h2>Stepper Motor Controls</h2>
@@ -243,30 +220,6 @@
                 <label style="color: gray; margin-right: 10px;">Click-to-Move:</label>
                 <button onclick="toggleClickToMove()" id="click-to-move-btn" style="background-color: #4CAF50; color: white; padding: 5px; margin-left: 10px;">Enable Click-to-Move</button>
                 <span id="click-status" style="color: gray; margin-left: 10px;">Disabled</span>
-            </div>
-        </div>
-
-        <!-- Calibration Controls -->
-        <div class="camera-controls" id="calibration-controls" style="display: none;">
-            <h2>Calibration Controls</h2>
-            <div style="margin-bottom: 10px;">
-                <label style="color: gray; margin-right: 10px;">Grid Size:</label>
-                <input type="number" id="grid-rows" value="3" min="2" max="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
-                <span style="color: gray; margin: 0 5px;">x</span>
-                <input type="number" id="grid-cols" value="3" min="2" max="10" style="width: 60px; background-color: #333; color: white; padding: 5px;">
-                <button onclick="startCalibration()" style="background-color: #FF9800; color: white; padding: 5px; margin-left: 10px;">Start Calibration</button>
-                <button onclick="saveCalibration()" style="background-color: #2196F3; color: white; padding: 5px; margin-left: 5px;">Save Calibration</button>
-            </div>
-            
-            <div id="calibration-status" style="color: gray; margin-bottom: 10px;">
-                Click on grid points in order to calibrate the mapping
-            </div>
-            
-            <div id="calibration-progress" style="margin-bottom: 10px;">
-                <div style="background-color: #333; height: 20px; border-radius: 10px; overflow: hidden;">
-                    <div id="progress-bar" style="background-color: #4CAF50; height: 100%; width: 0%; transition: width 0.3s;"></div>
-                </div>
-                <span id="progress-text" style="color: gray; font-size: 12px;">0 / 0 points calibrated</span>
             </div>
         </div>
 
@@ -479,29 +432,11 @@
             }
         }
 
-        function sendExposureCommand(type) {
-            const camera = document.getElementById('exposure-camera').value;
-            let value;
-            
-            switch(type) {
-                case 'ev':
-                    value = document.getElementById('ev-value').value;
-                    break;
-                case 'gain':
-                    value = document.getElementById('gain-value').value;
-                    break;
-                case 'aperture':
-                    value = document.getElementById('aperture-value').value;
-                    break;
-            }
-            
-            sendCommand(type, value + " " + camera);
-        }
-
         function sendStepperCommand(type, reverse = false) {
             const amount = document.getElementById(`${type}-amount`).value;
             const direction = reverse ? -1 : 1;
             const value = direction * parseInt(amount);
+            
             sendCommand(type, value);
         }
 
@@ -554,12 +489,8 @@
             writeToConsole("Refreshing captured image...");
         }
 
-        // Click-to-Move and Calibration Variables
+        // Click-to-Move Variables
         let clickToMoveEnabled = false;
-        let calibrationMode = false;
-        let calibrationPoints = [];
-        let currentCalibrationPoint = 0;
-        let totalCalibrationPoints = 0;
         let stepperMapping = null;
 
         // Add click event listener to overlay instead of iframe
@@ -587,10 +518,54 @@
             // Add visual feedback
             showClickIndicator(x, y);
             
-            if (calibrationMode) {
-                handleCalibrationClick(normalizedX, normalizedY);
+            // Calculate offset between red zoom indicator and center
+            const redDiv = document.getElementById('red-zoom-indicator');
+            const greenDiv = document.getElementById('green-center-indicator');
+            const streamContainer = document.getElementById('stream-container');
+            
+            if (redDiv && greenDiv && streamContainer) {
+                const redRect = redDiv.getBoundingClientRect();
+                const containerRect = streamContainer.getBoundingClientRect();
+                
+                // Get the cam1 iframe to calculate offset relative to it
+                const cam1Iframe = streamContainer.querySelector('iframe');
+                const iframeRect = cam1Iframe.getBoundingClientRect();
+                
+                // Debug: log all the coordinate values
+                writeToConsole(`Debug - Container: left=${containerRect.left}, top=${containerRect.top}, width=${containerRect.width}, height=${containerRect.height}`);
+                writeToConsole(`Debug - Cam1 iframe: left=${iframeRect.left}, top=${iframeRect.top}, width=${iframeRect.width}, height=${iframeRect.height}`);
+                writeToConsole(`Debug - Red div: left=${redRect.left}, top=${redRect.top}, width=${redRect.width}, height=${redRect.height}`);
+                
+                // Calculate center of cam1 iframe (not the entire container)
+                const iframeCenterX = iframeRect.width / 2;
+                const iframeCenterY = iframeRect.height / 2;
+                
+                // Calculate offset of red div from center of cam1 iframe
+                const redCenterX = (redRect.left - iframeRect.left) + redRect.width / 2;
+                const redCenterY = (redRect.top - iframeRect.top) + redRect.height / 2;
+                
+                const offsetX = redCenterX - iframeCenterX;
+                const offsetY = redCenterY - iframeCenterY;
+                
+                writeToConsole(`Debug - Iframe center: (${iframeCenterX}, ${iframeCenterY})`);
+                writeToConsole(`Debug - Red center: (${redCenterX}, ${redCenterY})`);
+                
+                // Apply offset to clicked coordinates (inverse because we want red div to center on click)
+                const adjustedX = x - (offsetX) + 5;
+                const adjustedY = y - (offsetY) + 3;
+                
+                // Scale coordinates since video is 3.5x smaller rendered on screen than 1280x720 stream
+                const scaledX = (adjustedX / rect.width) * 1280; // Scale to full 1280x720 resolution
+                const scaledY = (adjustedY / rect.height) * 720;
+                
+                writeToConsole(`Click offset: (${offsetX.toFixed(1)}, ${offsetY.toFixed(1)}) - Adjusted: (${adjustedX.toFixed(1)}, ${adjustedY.toFixed(1)})`);
+                
+                handleMoveClick(scaledX, scaledY);
             } else {
-                handleMoveClick(normalizedX, normalizedY);
+                // Fallback to original behavior if divs not found
+                const scaledX = normalizedX * 1280;
+                const scaledY = normalizedY * 720;
+                handleMoveClick(scaledX, scaledY);
             }
         }
 
@@ -623,19 +598,28 @@
 
         function handleMoveClick(x, y) {
             if (!stepperMapping) {
-                writeToConsole("No calibration data available. Please calibrate first.");
+                writeToConsole("No calibration data available. Loading lookup image...");
+                loadStepperMapping();
                 return;
             }
             
             try {
-                const [panSteps, tiltSteps] = stepperMapping.get_steps(x, y);
-                writeToConsole(`Moving to (${x.toFixed(3)}, ${y.toFixed(3)}) - Pan: ${panSteps}, Tilt: ${tiltSteps}`);
+                const [yaw, pitch] = stepperMapping.get_angles(x, y);
+                writeToConsole(`Clicked at (${x.toFixed(1)}, ${y.toFixed(1)}) - Yaw: ${yaw.toFixed(2)} deg, Pitch: ${pitch.toFixed(2)} deg`);
+                
+                // Convert angles to steps using hardcoded conversion values
+                const pitchStepsPerDegree = 200;
+                const yawStepsPerDegree = 933;
+                
+                // Invert the angles to fix the inverted movement
+                const panSteps = Math.round(-yaw * yawStepsPerDegree);
+                const tiltSteps = Math.round(-pitch * pitchStepsPerDegree);
                 
                 // Send pan and tilt commands
                 sendCommand('pan', panSteps);
                 sendCommand('tilt', tiltSteps);
             } catch (error) {
-                writeToConsole(`Error calculating steps: ${error.message}`);
+                writeToConsole(`Error calculating angles: ${error.message}`);
             }
         }
 
@@ -643,7 +627,6 @@
             clickToMoveEnabled = !clickToMoveEnabled;
             const btn = document.getElementById('click-to-move-btn');
             const status = document.getElementById('click-status');
-            const calibrationControls = document.getElementById('calibration-controls');
             const overlay = document.getElementById('cam1-overlay');
             
             if (clickToMoveEnabled) {
@@ -651,152 +634,148 @@
                 btn.style.backgroundColor = '#f44336';
                 status.textContent = 'Enabled';
                 status.style.color = '#4CAF50';
-                calibrationControls.style.display = 'block';
                 overlay.style.display = 'block';
                 setupClickToMove();
+                
+                // Load stepper mapping if not already loaded
+                if (!stepperMapping) {
+                    loadStepperMapping();
+                }
             } else {
                 btn.textContent = 'Enable Click-to-Move';
                 btn.style.backgroundColor = '#4CAF50';
                 status.textContent = 'Disabled';
                 status.style.color = 'gray';
-                calibrationControls.style.display = 'none';
                 overlay.style.display = 'none';
-                if (calibrationMode) {
-                    stopCalibration();
-                }
             }
         }
 
-        function startCalibration() {
-            const rows = parseInt(document.getElementById('grid-rows').value);
-            const cols = parseInt(document.getElementById('grid-cols').value);
-            
-            calibrationMode = true;
-            calibrationPoints = [];
-            currentCalibrationPoint = 0;
-            totalCalibrationPoints = rows * cols;
-            
-            updateCalibrationProgress();
-            updateCalibrationStatus(`Click on grid point ${currentCalibrationPoint + 1} of ${totalCalibrationPoints}`);
-            
-            writeToConsole(`Starting calibration with ${rows}x${cols} grid (${totalCalibrationPoints} points)`);
-        }
-
-        function handleCalibrationClick(x, y) {
-            if (!calibrationMode) return;
-            
-            // Calculate grid position
-            const rows = parseInt(document.getElementById('grid-rows').value);
-            const cols = parseInt(document.getElementById('grid-cols').value);
-            const row = Math.floor(currentCalibrationPoint / cols);
-            const col = currentCalibrationPoint % cols;
-            
-            // Store calibration point (x, y, pan_steps, tilt_steps)
-            // For now, we'll use simple linear mapping - you can improve this
-            const panSteps = Math.round((x - 0.5) * 1000); // -500 to 500 steps
-            const tiltSteps = Math.round((0.5 - y) * 1000); // -500 to 500 steps
-            
-            calibrationPoints.push([x, y, panSteps, tiltSteps]);
-            
-            writeToConsole(`Calibration point ${currentCalibrationPoint + 1}: (${x.toFixed(3)}, ${y.toFixed(3)}) -> Pan: ${panSteps}, Tilt: ${tiltSteps}`);
-            
-            currentCalibrationPoint++;
-            updateCalibrationProgress();
-            
-            if (currentCalibrationPoint >= totalCalibrationPoints) {
-                finishCalibration();
-            } else {
-                updateCalibrationStatus(`Click on grid point ${currentCalibrationPoint + 1} of ${totalCalibrationPoints}`);
-            }
-        }
-
-        function finishCalibration() {
-            calibrationMode = false;
-            updateCalibrationStatus('Calibration complete! Click "Save Calibration" to store the mapping.');
-            writeToConsole('Calibration completed successfully');
-            
-            // Create stepper mapping object
-            const rows = parseInt(document.getElementById('grid-rows').value);
-            const cols = parseInt(document.getElementById('grid-cols').value);
-            stepperMapping = new StepperMapping(calibrationPoints, [rows, cols]);
-        }
-
-        function stopCalibration() {
-            calibrationMode = false;
-            updateCalibrationStatus('Calibration cancelled');
-            writeToConsole('Calibration cancelled');
-        }
-
-        function updateCalibrationProgress() {
-            const progress = (currentCalibrationPoint / totalCalibrationPoints) * 100;
-            document.getElementById('progress-bar').style.width = progress + '%';
-            document.getElementById('progress-text').textContent = `${currentCalibrationPoint} / ${totalCalibrationPoints} points calibrated`;
-        }
-
-        function updateCalibrationStatus(message) {
-            document.getElementById('calibration-status').textContent = message;
-        }
-
-        function saveCalibration() {
-            if (!stepperMapping) {
-                writeToConsole('No calibration data to save');
-                return;
-            }
-            
-            // Save to localStorage for now - you can extend this to save to server
-            const calibrationData = {
-                points: calibrationPoints,
-                gridShape: [parseInt(document.getElementById('grid-rows').value), parseInt(document.getElementById('grid-cols').value)],
-                timestamp: Date.now()
-            };
-            
-            localStorage.setItem('stepperCalibration', JSON.stringify(calibrationData));
-            writeToConsole('Calibration saved to browser storage');
-        }
-
-        function loadCalibration() {
-            const saved = localStorage.getItem('stepperCalibration');
-            if (saved) {
-                try {
-                    const data = JSON.parse(saved);
-                    calibrationPoints = data.points;
-                    document.getElementById('grid-rows').value = data.gridShape[0];
-                    document.getElementById('grid-cols').value = data.gridShape[1];
-                    stepperMapping = new StepperMapping(calibrationPoints, data.gridShape);
-                    writeToConsole('Calibration loaded from storage');
-                } catch (error) {
-                    writeToConsole('Error loading calibration: ' + error.message);
-                }
-            }
-        }
-
-        // Simple StepperMapping class (you can replace this with your existing one)
+        // New StepperMapping class that uses lookup image
         class StepperMapping {
-            constructor(calibrationPoints, gridShape) {
-                this.points = calibrationPoints;
-                this.gridShape = gridShape;
+            constructor() {
+                this.lookupImage = null;
+                this.canvas = null;
+                this.ctx = null;
+                this.loaded = false;
+                this.HFOV_DEG = 75.0;
+                this.VFOV_DEG = 60.0;
             }
             
-            get_steps(x, y) {
-                // Simple nearest neighbor interpolation for now
-                // You can implement bilinear interpolation as in your StepperMapping.py
-                let minDist = Infinity;
-                let bestPoint = null;
-                
-                for (const point of this.points) {
-                    const [px, py, panSteps, tiltSteps] = point;
-                    const dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2);
-                    if (dist < minDist) {
-                        minDist = dist;
-                        bestPoint = point;
-                    }
+            async loadLookupImage() {
+                try {
+                    // Create a canvas to load and process the image
+                    this.canvas = document.createElement('canvas');
+                    this.ctx = this.canvas.getContext('2d');
+                    
+                    // Create an image element to load the lookup image
+                    const img = new Image();
+                    img.crossOrigin = 'anonymous'; // Handle CORS if needed
+                    
+                    return new Promise((resolve, reject) => {
+                        img.onload = () => {
+                            this.canvas.width = img.width;
+                            this.canvas.height = img.height;
+                            this.ctx.drawImage(img, 0, 0);
+                            this.loaded = true;
+                            writeToConsole(`Loaded lookup image: ${img.width}x${img.height}`);
+                            resolve();
+                        };
+                        
+                        img.onerror = () => {
+                            reject(new Error('Failed to load lookup image'));
+                        };
+                        
+                        // Load the lookup image from the cameracalibration directory
+                        img.src = 'cameracalibration/angle_lookup.png';
+                        writeToConsole('Loading lookup image from cameracalibration/angle_lookup.png...');
+                    });
+                } catch (error) {
+                    writeToConsole(`Error loading lookup image: ${error.message}`);
+                    throw error;
+                }
+            }
+            
+            decode_angle(r, g) {
+                // Decode angles from RGB values (matching the Python implementation)
+                const yaw = (r / 255.0) * this.HFOV_DEG - this.HFOV_DEG / 2;
+                const pitch = (g / 255.0) * this.VFOV_DEG - this.VFOV_DEG / 2;
+                return [yaw, pitch];
+            }
+            
+            get_angles(x, y) {
+                if (!this.loaded) {
+                    throw new Error('Lookup image not loaded');
                 }
                 
-                if (bestPoint) {
-                    return [bestPoint[2], bestPoint[3]]; // pan, tilt steps
+                // Clamp coordinates to image bounds
+                const clampedX = Math.max(0, Math.min(this.canvas.width - 1, Math.round(x)));
+                const clampedY = Math.max(0, Math.min(this.canvas.height - 1, Math.round(y)));
+                
+                // Get pixel data at the specified coordinates
+                const pixelData = this.ctx.getImageData(clampedX, clampedY, 1, 1).data;
+                
+                // OpenCV loads BGR, so we need to access the correct channels
+                // Based on the pixel values, yaw is in blue channel, pitch in green channel
+                const b = pixelData[0]; // Blue channel (yaw) - appears to contain yaw data
+                const g = pixelData[1]; // Green channel (pitch)
+                
+                // Debug: log the pixel values
+                writeToConsole(`Pixel at (${clampedX}, ${clampedY}): R=${pixelData[2]}, G=${g}, B=${b}`);
+                
+                // Decode the angles - use blue for yaw, green for pitch
+                const [yaw, pitch] = this.decode_angle(b, g);
+                
+                return [yaw, pitch]; // Return yaw, pitch (matching the Python implementation)
+            }
+        }
+
+        async function loadStepperMapping() {
+            try {
+                stepperMapping = new StepperMapping();
+                await stepperMapping.loadLookupImage();
+                writeToConsole('Stepper mapping loaded successfully');
+                
+                // Test center pixel to verify channel ordering
+                const centerX = Math.round(stepperMapping.canvas.width / 2);
+                const centerY = Math.round(stepperMapping.canvas.height / 2);
+                const [centerYaw, centerPitch] = stepperMapping.get_angles(centerX, centerY);
+                writeToConsole(`Center pixel test (${centerX}, ${centerY}): Yaw=${centerYaw.toFixed(2)} deg, Pitch=${centerPitch.toFixed(2)} deg (should be close to 0,0)`);
+                
+            } catch (error) {
+                writeToConsole(`Failed to load stepper mapping: ${error.message}`);
+                stepperMapping = null;
+            }
+        }
+
+        // Test function to verify lookup image is working
+        async function testLookupImage() {
+            try {
+                if (!stepperMapping) {
+                    await loadStepperMapping();
                 }
                 
-                return [0, 0];
+                if (stepperMapping && stepperMapping.loaded) {
+                    // Test center of image
+                    const centerX = stepperMapping.canvas.width / 2;
+                    const centerY = stepperMapping.canvas.height / 2;
+                    const [yaw, pitch] = stepperMapping.get_angles(centerX, centerY);
+                    writeToConsole(`Center test (${centerX}, ${centerY}): Yaw=${yaw.toFixed(2)} deg, Pitch=${pitch.toFixed(2)} deg`);
+                    
+                    // Test corners
+                    const [yawTL, pitchTL] = stepperMapping.get_angles(0, 0);
+                    const [yawTR, pitchTR] = stepperMapping.get_angles(stepperMapping.canvas.width - 1, 0);
+                    const [yawBL, pitchBL] = stepperMapping.get_angles(0, stepperMapping.canvas.height - 1);
+                    const [yawBR, pitchBR] = stepperMapping.get_angles(stepperMapping.canvas.width - 1, stepperMapping.canvas.height - 1);
+                    
+                    writeToConsole(`Top-left: Yaw=${yawTL.toFixed(2)} deg, Pitch=${pitchTL.toFixed(2)} deg`);
+                    writeToConsole(`Top-right: Yaw=${yawTR.toFixed(2)} deg, Pitch=${pitchTR.toFixed(2)} deg`);
+                    writeToConsole(`Bottom-left: Yaw=${yawBL.toFixed(2)} deg, Pitch=${pitchBL.toFixed(2)} deg`);
+                    writeToConsole(`Bottom-right: Yaw=${yawBR.toFixed(2)} deg, Pitch=${pitchBR.toFixed(2)} deg`);
+                } else {
+                    writeToConsole('Stepper mapping not loaded');
+                }
+            } catch (error) {
+                writeToConsole(`Test failed: ${error.message}`);
             }
         }
 
@@ -809,8 +788,8 @@
                 await startWebRTC(document.getElementById('cam0-video'), 'cam0');
                 await startWebRTC(document.getElementById('cam1-video'), 'cam1');
                 
-                // Load saved calibration
-                loadCalibration();
+                // Load stepper mapping
+                await loadStepperMapping();
             } catch (e) {
                 console.error('Error starting WebRTC:', e);
             }
