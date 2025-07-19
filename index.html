@@ -541,8 +541,8 @@
                 const iframeCenterY = iframeRect.height / 2;
                 
                 // Calculate offset of red div from center of cam1 iframe
-                const redCenterX = (redRect.left - iframeRect.left) + redRect.width / 2;
-                const redCenterY = (redRect.top - iframeRect.top) + redRect.height / 2;
+                const redCenterX = (redRect.left - iframeRect.left) + redRect.width/2;
+                const redCenterY = (redRect.top - iframeRect.top) + redRect.height/2;
                 
                 const offsetX = redCenterX - iframeCenterX;
                 const offsetY = redCenterY - iframeCenterY;
@@ -551,8 +551,8 @@
                 writeToConsole(`Debug - Red center: (${redCenterX}, ${redCenterY})`);
                 
                 // Apply offset to clicked coordinates (inverse because we want red div to center on click)
-                const adjustedX = x - (offsetX) + 5;
-                const adjustedY = y - (offsetY) + 3;
+                const adjustedX = x - (offsetX);
+                const adjustedY = y - (offsetY);
                 
                 // Scale coordinates since video is 3.5x smaller rendered on screen than 1280x720 stream
                 const scaledX = (adjustedX / rect.width) * 1280; // Scale to full 1280x720 resolution
@@ -608,8 +608,8 @@
                 writeToConsole(`Clicked at (${x.toFixed(1)}, ${y.toFixed(1)}) - Yaw: ${yaw.toFixed(2)} deg, Pitch: ${pitch.toFixed(2)} deg`);
                 
                 // Convert angles to steps using hardcoded conversion values
-                const pitchStepsPerDegree = 200;
-                const yawStepsPerDegree = 933;
+                const pitchStepsPerDegree = 805;
+                const yawStepsPerDegree = 2146;
                 
                 // Invert the angles to fix the inverted movement
                 const panSteps = Math.round(-yaw * yawStepsPerDegree);
@@ -657,8 +657,8 @@
                 this.canvas = null;
                 this.ctx = null;
                 this.loaded = false;
-                this.HFOV_DEG = 75.0;
-                this.VFOV_DEG = 60.0;
+                this.HFOV_DEG = 42;
+                this.VFOV_DEG = 20;
             }
             
             async loadLookupImage() {
