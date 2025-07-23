@@ -204,7 +204,7 @@
             <h2>Stepper Motor Controls</h2>
             <div style="margin-bottom: 10px;">
                 <label style="color: gray; margin-right: 10px;">Pan Amount:</label>
-                <input type="number" id="pan-amount" value="50" step="1" style="width: 80px; background-color: #333; color: white; padding: 5px;">
+                <input type="number" id="pan-amount" value="133.3333" step="1" style="width: 80px; background-color: #333; color: white; padding: 5px;">
                 <button onclick="sendStepperCommand('pan')" style="background-color: gray; color: white; padding: 5px; margin-left: 10px;">Pan Left</button>
                 <button onclick="sendStepperCommand('pan', true)" style="background-color: gray; color: white; padding: 5px; margin-left: 5px;">Pan Right</button>
             </div>
@@ -220,6 +220,20 @@
                 <label style="color: gray; margin-right: 10px;">Click-to-Move:</label>
                 <button onclick="toggleClickToMove()" id="click-to-move-btn" style="background-color: #4CAF50; color: white; padding: 5px; margin-left: 10px;">Enable Click-to-Move</button>
                 <span id="click-status" style="color: gray; margin-left: 10px;">Disabled</span>
+            </div>
+            
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Acceleration:</label>
+                <input type="number" id="accel-rate" value="1.000001" step="0.000001" style="width: 80px; background-color: #333; color: white; padding: 5px;" placeholder="Accel">
+                <input type="number" id="decel-rate" value="0.999999" step="0.000001" style="width: 80px; background-color: #333; color: white; padding: 5px; margin-left: 5px;" placeholder="Decel">
+                <button onclick="sendCustomAccel()" style="background-color: #9C27B0; color: white; padding: 5px; margin-left: 5px;">Set</button>
+            </div>
+            
+            <div style="margin-bottom: 10px;">
+                <label style="color: gray; margin-right: 10px;">Max Speed:</label>
+                <input type="number" id="max-speed" value="0.000025" step="0.000001" style="width: 80px; background-color: #333; color: white; padding: 5px;" placeholder="Delay (s)">
+                <button onclick="sendMaxSpeed()" style="background-color: #4CAF50; color: white; padding: 5px; margin-left: 5px;">Set</button>
+                <span style="color: gray; margin-left: 10px; font-size: 12px;">(smaller = faster)</span>
             </div>
         </div>
 
@@ -438,6 +452,29 @@
             const value = direction * parseInt(amount);
             
             sendCommand(type, value);
+        }
+
+        function sendCustomAccel() {
+            const accelRate = document.getElementById('accel-rate').value;
+            const decelRate = document.getElementById('decel-rate').value;
+            
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(`accel_custom ${accelRate} ${decelRate}`);
+                writeToConsole(`Sent: accel_custom ${accelRate} ${decelRate}`);
+            } else {
+                writeToConsole("WebSocket is not connected");
+            }
+        }
+
+        function sendMaxSpeed() {
+            const maxSpeedDelay = document.getElementById('max-speed').value;
+            
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send(`max_speed ${maxSpeedDelay}`);
+                writeToConsole(`Sent: max_speed ${maxSpeedDelay}`);
+            } else {
+                writeToConsole("WebSocket is not connected");
+            }
         }
 
         function sendShutdownCommand() {

@@ -14,8 +14,8 @@ class TMC2208Driver(MotorDriver):
         # Acceleration parameters
         self.min_delay = step_delay  # Fastest speed (smallest delay)
         self.max_delay = step_delay * 4  # Starting speed (largest delay)
-        self.acceleration = 1.015  # Acceleration multiplier (adjust this to change acceleration rate)
-        self.deceleration = 0.985  # Deceleration multiplier (adjust this to change deceleration rate)
+        self.acceleration = 1.000001  # Acceleration multiplier (adjust this to change acceleration rate)
+        self.deceleration = 0.999999  # Deceleration multiplier (adjust this to change deceleration rate)
         
         # Ramping control
         self.ramping_enabled = True  # Default to enabled
@@ -75,6 +75,80 @@ class TMC2208Driver(MotorDriver):
                 self.ramp_settings['max_accel_steps'] = max_accel_steps
             else:
                 raise ValueError("max_accel_steps must be greater than 0")
+
+    def set_acceleration_rate(self, acceleration_multiplier):
+        """
+        Set the acceleration rate multiplier
+        :param acceleration_multiplier: Value > 1.0 for slower acceleration, < 1.0 for faster
+        Examples:
+        - 1.005: Very slow acceleration
+        - 1.015: Current default (moderate)
+        - 1.05: Fast acceleration
+        """
+        if acceleration_multiplier <= 1.0:
+            raise ValueError("Acceleration multiplier must be greater than 1.0")
+        self.acceleration = acceleration_multiplier
+        print(f"Acceleration rate set to: {acceleration_multiplier}")
+
+    def set_deceleration_rate(self, deceleration_multiplier):
+        """
+        Set the deceleration rate multiplier
+        :param deceleration_multiplier: Value < 1.0 for slower deceleration, > 1.0 for faster
+        Examples:
+        - 0.995: Very slow deceleration
+        - 0.985: Current default (moderate)
+        - 0.95: Fast deceleration
+        """
+        if deceleration_multiplier >= 1.0:
+            raise ValueError("Deceleration multiplier must be less than 1.0")
+        self.deceleration = deceleration_multiplier
+        print(f"Deceleration rate set to: {deceleration_multiplier}")
+
+    def set_speed_range(self, min_delay=None, max_delay=None):
+        """
+        Set the speed range for acceleration/deceleration
+        :param min_delay: Fastest speed (smallest delay)
+        :param max_delay: Slowest speed (largest delay)
+        """
+        if min_delay is not None:
+            self.min_delay = min_delay
+        if max_delay is not None:
+            self.max_delay = max_delay
+        print(f"Speed range: min_delay={self.min_delay}, max_delay={self.max_delay}")
+
+    def set_max_speed(self, max_speed_delay):
+        """
+        Set the maximum speed (minimum delay) for the motor
+        :param max_speed_delay: Delay in seconds for maximum speed (smaller = faster)
+        """
+        if max_speed_delay <= 0:
+            raise ValueError("Max speed delay must be greater than 0")
+        self.min_delay = max_speed_delay
+        print(f"Max speed set to: {max_speed_delay} seconds delay (faster = smaller delay)")
+
+    def set_gentle_acceleration(self):
+        """Set very gentle acceleration and deceleration"""
+        self.acceleration = 1.005  # Very slow acceleration
+        self.deceleration = 0.995  # Very slow deceleration
+        self.ramp_settings['accel_percent'] = 0.4  # Use more steps for acceleration
+        self.ramp_settings['max_accel_steps'] = 100  # Allow more acceleration steps
+        print("Gentle acceleration profile enabled")
+
+    def set_moderate_acceleration(self):
+        """Set moderate acceleration and deceleration (current default)"""
+        self.acceleration = 1.000001
+        self.deceleration = 0.999999
+        self.ramp_settings['accel_percent'] = 0.3
+        self.ramp_settings['max_accel_steps'] = 50
+        print("Moderate acceleration profile enabled")
+
+    def set_aggressive_acceleration(self):
+        """Set aggressive acceleration and deceleration"""
+        self.acceleration = 1.05
+        self.deceleration = 0.95
+        self.ramp_settings['accel_percent'] = 0.2
+        self.ramp_settings['max_accel_steps'] = 25
+        print("Aggressive acceleration profile enabled")
 
     def step_motor(self, steps, step_delay):
         self.enable_device.value = False

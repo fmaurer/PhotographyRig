@@ -228,6 +228,47 @@ class WebSocketServer:
                     print("Shutdown command received from WebSocket client")
                     await self.graceful_shutdown()
                     return  # Exit the handler
+                elif command in ['accel_gentle', 'accel_moderate', 'accel_aggressive']:
+                    # Handle acceleration commands (no parameters needed)
+                    if command == "accel_gentle":
+                        self.motor_controller.driver.set_gentle_acceleration()
+                        self.motor_controller_tilt.driver.set_gentle_acceleration()
+                        await websocket.send("Gentle acceleration enabled for both motors")
+                    elif command == "accel_moderate":
+                        self.motor_controller.driver.set_moderate_acceleration()
+                        self.motor_controller_tilt.driver.set_moderate_acceleration()
+                        await websocket.send("Moderate acceleration enabled for both motors")
+                    elif command == "accel_aggressive":
+                        self.motor_controller.driver.set_aggressive_acceleration()
+                        self.motor_controller_tilt.driver.set_aggressive_acceleration()
+                        await websocket.send("Aggressive acceleration enabled for both motors")
+                elif command == "accel_custom":
+                    # Handle custom acceleration command (requires 2 parameters)
+                    if len(parts) != 3:
+                        await websocket.send("Error: accel_custom requires acceleration and deceleration values")
+                        continue
+                    accel_rate = float(parts[1])
+                    decel_rate = float(parts[2])
+                    try:
+                        self.motor_controller.driver.set_acceleration_rate(accel_rate)
+                        self.motor_controller.driver.set_deceleration_rate(decel_rate)
+                        self.motor_controller_tilt.driver.set_acceleration_rate(accel_rate)
+                        self.motor_controller_tilt.driver.set_deceleration_rate(decel_rate)
+                        await websocket.send(f"Custom acceleration set: accel={accel_rate}, decel={decel_rate}")
+                    except ValueError as e:
+                        await websocket.send(f"Error setting acceleration: {str(e)}")
+                elif command == "max_speed":
+                    # Handle max speed command (requires 1 parameter)
+                    if len(parts) != 2:
+                        await websocket.send("Error: max_speed requires one value (delay in seconds)")
+                        continue
+                    max_speed_delay = float(parts[1])
+                    try:
+                        self.motor_controller.driver.set_max_speed(max_speed_delay)
+                        self.motor_controller_tilt.driver.set_max_speed(max_speed_delay)
+                        await websocket.send(f"Max speed set to: {max_speed_delay} seconds delay")
+                    except ValueError as e:
+                        await websocket.send(f"Error setting max speed: {str(e)}")
                 elif command in ['ev', 'gain', 'aperture']:
                     if len(parts) != 3:
                         await websocket.send(f"Error: {command} command requires value and camera number")
@@ -240,6 +281,19 @@ class WebSocketServer:
                         self.set_gain_value(camera, value)
                     elif command == 'aperture':
                         self.set_aperture_value(camera, value)
+                elif command == "move":
+                    # Handle move command (requires 2 parameters)
+                    if len(parts) != 3:
+                        await websocket.send("Error: move command requires pan and tilt values")
+                        continue
+                    pan_arg = int(parts[1])
+                    tilt_arg = int(parts[2])
+                    
+                    # Start both movements simultaneously
+                    pan_thread = threading.Thread(target=self.motor_controller.step_to, args=(pan_arg,))
+                    tilt_thread = threading.Thread(target=self.motor_controller_tilt.step_to, args=(tilt_arg,))
+                    pan_thread.start()
+                    tilt_thread.start()
                 else:
                     # Handle two-part commands (original format)
                     if len(parts) != 2:
