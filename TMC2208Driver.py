@@ -11,6 +11,10 @@ class TMC2208Driver(MotorDriver):
         self.enable_device = OutputDevice(enable_pin)
         self.base_delay = step_delay
         
+        # Movement control
+        self.should_stop = False
+        self.is_moving = False
+        
         # Acceleration parameters
         self.min_delay = step_delay  # Fastest speed (smallest delay)
         self.max_delay = step_delay * 4  # Starting speed (largest delay)
@@ -47,6 +51,14 @@ class TMC2208Driver(MotorDriver):
     def step_to(self, number):
         self.dir_device.value = number > 0
         self.step_motor(abs(number), self.base_delay) 
+
+    def stop_movement(self):
+        """Stop any ongoing movement"""
+        self.should_stop = True
+        # Wait briefly for the movement to stop
+        while self.is_moving:
+            time.sleep(0.001)  # 1ms delay
+        self.should_stop = False
 
     def enable_ramping(self):
         """Enable acceleration ramping"""
@@ -152,21 +164,29 @@ class TMC2208Driver(MotorDriver):
 
     def step_motor(self, steps, step_delay):
         self.enable_device.value = False
+        self.is_moving = True
+        self.should_stop = False
         
         if steps == 0:
+            self.is_moving = False
             return
             
-        if self.ramping_enabled:
-            self._step_motor_with_ramping(steps)
-        else:
-            self._step_motor_constant_speed(steps)
-            
-        self.enable_device.value = True
+        try:
+            if self.ramping_enabled:
+                self._step_motor_with_ramping(steps)
+            else:
+                self._step_motor_constant_speed(steps)
+        finally:
+            self.is_moving = False
+            self.enable_device.value = True
         
     def _step_motor_constant_speed(self, steps):
         """Execute steps at constant speed"""
         print(f"Moving stepper {steps} steps at constant speed")
-        for _ in range(steps):
+        for i in range(steps):
+            if self.should_stop:
+                print("Movement stopped by stop command")
+                return
             self._do_step(self.base_delay)
             
     def _step_motor_with_ramping(self, steps):
@@ -183,15 +203,24 @@ class TMC2208Driver(MotorDriver):
         
         # Acceleration phase
         for i in range(accel_steps):
+            if self.should_stop:
+                print("Movement stopped by stop command during acceleration")
+                return
             self._do_step(current_delay)
             current_delay = max(self.min_delay, current_delay * self.acceleration)
             
         # Constant speed phase
         for i in range(const_steps):
+            if self.should_stop:
+                print("Movement stopped by stop command during constant speed")
+                return
             self._do_step(self.min_delay)
             
         # Deceleration phase
         for i in range(decel_steps):
+            if self.should_stop:
+                print("Movement stopped by stop command during deceleration")
+                return
             self._do_step(current_delay)
             current_delay = min(self.max_delay, current_delay * self.deceleration)
 

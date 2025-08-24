@@ -17,6 +17,11 @@ class WebSocketServer:
         self.motor_controller = motor_controller
         self.motor_controller_tilt = motor_controller2
         
+        # Add movement tracking to prevent command stacking
+        self.current_pan_movement = None
+        self.current_tilt_movement = None
+        self.movement_lock = threading.Lock()
+        
         # Remove redundant file server - main.py already handles this
         # self.file_server = self.start_file_server()
         # print("File server started")
@@ -116,9 +121,9 @@ class WebSocketServer:
                     'source': 'publisher',
                     'sourceProtocol': 'tcp',
                     'runOnInit': 'bash -c \'rpicam-vid -t 0 --camera 1 --nopreview '
-                               '--codec yuv420 --width 1280 --height 720 --inline '
-                               '--listen --shutter 5000 --level 3.1 -o - | '
-                               'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1280x720 '
+                               '--codec yuv420 --width 1920 --height 1080 --inline '
+                               '--listen --shutter 1000 --level 3.1 -o - | '
+                               'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1920x1080 '
                                '-i /dev/stdin -c:v libx264 -preset ultrafast '
                                '-tune zerolatency -profile:v baseline '
                                '-b:v 1M -maxrate 1M -bufsize 500k '
@@ -289,11 +294,9 @@ class WebSocketServer:
                     pan_arg = int(parts[1])
                     tilt_arg = int(parts[2])
                     
-                    # Start both movements simultaneously
-                    pan_thread = threading.Thread(target=self.motor_controller.step_to, args=(pan_arg,))
-                    tilt_thread = threading.Thread(target=self.motor_controller_tilt.step_to, args=(tilt_arg,))
-                    pan_thread.start()
-                    tilt_thread.start()
+                    # Cancel any ongoing movements and start new ones
+                    await self.cancel_and_start_pan(pan_arg)
+                    await self.cancel_and_start_tilt(tilt_arg)
                 else:
                     # Handle two-part commands (original format)
                     if len(parts) != 2:
@@ -303,11 +306,11 @@ class WebSocketServer:
                     argument = int(argument)
                     
                     if command == "pan":
-                        pan_thread = threading.Thread(target=self.motor_controller.step_to, args=(argument,))
-                        pan_thread.start()
+                        # Cancel any ongoing pan movement and start new one
+                        await self.cancel_and_start_pan(argument)
                     elif command == "tilt":
-                        tilt_thread = threading.Thread(target=self.motor_controller_tilt.step_to, args=(argument,))
-                        tilt_thread.start()
+                        # Cancel any ongoing tilt movement and start new one
+                        await self.cancel_and_start_tilt(argument)
                     elif command == "capture":
                         self.trigger_camera(argument)
                     elif command == "shutter":
@@ -323,11 +326,9 @@ class WebSocketServer:
                         pan_arg = int(parts[1])
                         tilt_arg = int(parts[2])
                         
-                        # Start both movements simultaneously
-                        pan_thread = threading.Thread(target=self.motor_controller.step_to, args=(pan_arg,))
-                        tilt_thread = threading.Thread(target=self.motor_controller_tilt.step_to, args=(tilt_arg,))
-                        pan_thread.start()
-                        tilt_thread.start()
+                        # Cancel any ongoing movements and start new ones
+                        await self.cancel_and_start_pan(pan_arg)
+                        await self.cancel_and_start_tilt(tilt_arg)
                     else:
                         await websocket.send(f"Unknown command: {command}")
         except websockets.exceptions.ConnectionClosed:
@@ -335,6 +336,36 @@ class WebSocketServer:
         except Exception as e:
             print(f"Error handling message: {e}")
             await websocket.send(f"Error: {str(e)}")
+
+    async def cancel_and_start_pan(self, steps):
+        """Cancel ongoing pan movement and start new one"""
+        with self.movement_lock:
+            if self.current_pan_movement and self.current_pan_movement.is_alive():
+                # Signal the current movement to stop
+                self.motor_controller.driver.stop_movement()
+                self.current_pan_movement.join(timeout=0.1)  # Wait briefly for cleanup
+            
+            # Start new movement
+            self.current_pan_movement = threading.Thread(
+                target=self.motor_controller.step_to, 
+                args=(steps,)
+            )
+            self.current_pan_movement.start()
+
+    async def cancel_and_start_tilt(self, steps):
+        """Cancel ongoing tilt movement and start new one"""
+        with self.movement_lock:
+            if self.current_tilt_movement and self.current_tilt_movement.is_alive():
+                # Signal the current movement to stop
+                self.motor_controller_tilt.driver.stop_movement()
+                self.current_tilt_movement.join(timeout=0.1)  # Wait briefly for cleanup
+            
+            # Start new movement
+            self.current_tilt_movement = threading.Thread(
+                target=self.motor_controller_tilt.step_to, 
+                args=(steps,)
+            )
+            self.current_tilt_movement.start()
 
     async def graceful_shutdown(self):
         """Perform graceful shutdown of all processes"""
