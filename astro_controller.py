@@ -3,6 +3,11 @@ from astropy.time import Time
 from astropy import units as u
 from motor_controller import MotorController
 
+# Predefined calibration landmarks {name: (lat, lon, alt_meters)}
+LANDMARKS = {
+    'sutro_tower': (37.75523513769333, -122.45284686030872, 298),  # Top of Sutro Tower, SF (~268m tower + ~30m ground)
+}
+
 class AstroController:
     def __init__(self, pan_motor_controller, tilt_motor_controller, current_location):
         self.pan_motor_controller = pan_motor_controller

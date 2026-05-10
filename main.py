@@ -142,7 +142,7 @@ def main():
     tilt_motor_controller = MotorController(tmc2208_driver_2)
 
     # Initialize the astro controller
-    location = EarthLocation(lat=37.3855*u.deg, lon=-118.5819*u.deg, height=2402*u.m) #Mammoth Lakes
+    location = EarthLocation(lat=37.772141367914045*u.deg, lon=-122.42168568117974*u.deg, height=42*u.m) #1699 Market St, SF, 9th floor
     astro_controller = AstroController(pan_motor_controller, tilt_motor_controller, location)
 
     # Point the camera at the moon

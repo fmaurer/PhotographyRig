@@ -130,6 +130,38 @@
             transform: none !important;
             box-shadow: none !important;
         }
+
+        .recording-button {
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .recording-button.recording {
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+            100% { transform: scale(1); }
+        }
+
+        .recording-button.recording::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            animation: recording-shine 2s infinite;
+        }
+
+        @keyframes recording-shine {
+            0% { left: -100%; }
+            100% { left: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -182,6 +214,7 @@
             <button class="exposure-button" onclick="sendCommand('exposeinside', 0)">Inside</button>-->
             <button class="exposure-button" onclick="sendCommand('capture', 0)">Take Photo</button>
             <button class="exposure-button" onclick="refreshCapturedImage()">&#x21BA; Refresh Image</button>
+            <button id="record-cam0" class="exposure-button recording-button" onclick="toggleRecording('cam0')" style="background-color: #4CAF50;">Start Recording</button>
         </div>
  
         <div class="camera-controls">
@@ -189,6 +222,7 @@
             <!--<button class="exposure-button" onclick="sendCommand('exposeoutdoor', 1)">Daylight</button>
             <button class="exposure-button" onclick="sendCommand('exposeinside', 1)">Inside</button>
             <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>-->
+            <button id="record-cam1" class="exposure-button recording-button" onclick="toggleRecording('cam1')" style="background-color: #4CAF50;">Start Recording</button>
         </div>
         
         <!-- System Controls -->
@@ -197,11 +231,58 @@
             <button id="shutdown-button" onclick="sendShutdownCommand()">
                 &#x26D4; SHUTDOWN SYSTEM
             </button>
+            <button onclick="testRecordingWithCanvas()" style="background-color: #2196F3; color: white; padding: 10px; margin: 5px;">
+                Test Recording (Canvas)
+            </button>
+            <button onclick="testWebSocketConnections()" style="background-color: #FF9800; color: white; padding: 10px; margin: 5px;">
+                Test WebSocket Connections
+            </button>
         </div>
 
         <!-- Stepper Motor Controls -->
         <div class="camera-controls">
             <h2>Stepper Motor Controls</h2>
+            
+            <!-- Current Position Display -->
+            <div style="margin-bottom: 15px; padding: 10px; background-color: #2a2a2a; border-radius: 5px;">
+                <h3 style="margin: 0 0 10px 0; color: #4CAF50;">Current Position</h3>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                    <label style="color: #4CAF50; font-weight: bold;">Pan Position:</label>
+                    <span id="current-pan-position" style="color: white; font-family: monospace; font-size: 16px;">0</span>
+                    <span style="color: gray; font-size: 12px;">steps</span>
+                </div>
+                <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                    <label style="color: #4CAF50; font-weight: bold;">Tilt Position:</label>
+                    <span id="current-tilt-position" style="color: white; font-family: monospace; font-size: 16px;">0</span>
+                    <span style="color: gray; font-size: 12px;">steps</span>
+                </div>
+                <div style="display: flex; justify-content: space-between;">
+                    <label style="color: #4CAF50; font-weight: bold;">Total Distance:</label>
+                    <span id="total-distance" style="color: white; font-family: monospace; font-size: 16px;">0</span>
+                    <span style="color: gray; font-size: 12px;">steps</span>
+                </div>
+            </div>
+            
+            <!-- Homing Controls -->
+            <div style="margin-bottom: 15px; padding: 10px; background-color: #2a2a2a; border-radius: 5px;">
+                <h3 style="margin: 0 0 10px 0; color: #FF9800;">Homing & Reference</h3>
+                <div style="margin-bottom: 10px;">
+                    <button onclick="setHomePosition()" style="background-color: #FF9800; color: white; padding: 8px 15px; margin-right: 10px;">Set Home Position</button>
+                    <button onclick="goToHome()" style="background-color: #2196F3; color: white; padding: 8px 15px; margin-right: 10px;">Go to Home</button>
+                    <button onclick="resetPosition()" style="background-color: #F44336; color: white; padding: 8px 15px;">Reset to Zero</button>
+                    <button onclick="clearAllPositions()" style="background-color: #607D8B; color: white; padding: 8px 15px; margin-left: 10px;">Clear All</button>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <label style="color: gray; margin-right: 10px;">Manual Position Set:</label>
+                    <input type="number" id="manual-pan" placeholder="Pan steps" style="width: 80px; background-color: #333; color: white; padding: 5px; margin-right: 5px;">
+                    <input type="number" id="manual-tilt" placeholder="Tilt steps" style="width: 80px; background-color: #333; color: white; padding: 5px; margin-right: 5px;">
+                    <button onclick="setManualPosition()" style="background-color: #9C27B0; color: white; padding: 8px 15px;">Set Position</button>
+                </div>
+                <div style="font-size: 12px; color: gray;">
+                    Home Position: <span id="home-pan">0</span> pan, <span id="home-tilt">0</span> tilt
+                </div>
+            </div>
+            
             <div style="margin-bottom: 10px;">
                 <label style="color: gray; margin-right: 10px;">Pan Amount:</label>
                 <input type="number" id="pan-amount" value="133.3333" step="1" style="width: 80px; background-color: #333; color: white; padding: 5px;">
@@ -234,6 +315,73 @@
                 <input type="number" id="max-speed" value="0.000025" step="0.000001" style="width: 80px; background-color: #333; color: white; padding: 5px;" placeholder="Delay (s)">
                 <button onclick="sendMaxSpeed()" style="background-color: #4CAF50; color: white; padding: 5px; margin-left: 5px;">Set</button>
                 <span style="color: gray; margin-left: 10px; font-size: 12px;">(smaller = faster)</span>
+            </div>
+            
+            <!-- Backlash Compensation -->
+            <div style="margin-bottom: 15px; padding: 10px; background-color: #2a2a2a; border-radius: 5px;">
+                <h3 style="margin: 0 0 10px 0; color: #E91E63;">Backlash Compensation</h3>
+                <div style="margin-bottom: 10px;">
+                    <label style="color: gray; margin-right: 10px;">Pan Backlash:</label>
+                    <input type="number" id="pan-backlash" value="5" min="0" step="1" style="width: 80px; background-color: #333; color: white; padding: 5px; margin-right: 10px;" placeholder="Steps">
+                    <span style="color: gray; font-size: 12px;">steps</span>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <label style="color: gray; margin-right: 10px;">Tilt Backlash:</label>
+                    <input type="number" id="tilt-backlash" value="3" min="0" step="1" style="width: 80px; background-color: #333; color: white; padding: 5px; margin-right: 10px;" placeholder="Steps">
+                    <span style="color: gray; font-size: 12px;">steps</span>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <button onclick="resetBacklashTracking()" style="background-color: #607D8B; color: white; padding: 5px 10px; font-size: 12px;">Reset Direction Tracking</button>
+                    <span style="color: gray; font-size: 11px; margin-left: 10px;">Use when motors are manually moved</span>
+                </div>
+                <div style="font-size: 12px; color: gray;">
+                    Automatically adds compensation steps when direction changes
+                </div>
+                <div style="font-size: 11px; color: #E91E63; margin-top: 5px;">
+                    Status: <span id="backlash-status">Ready</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- IMU Tilt Visualizer -->
+        <div class="camera-controls" id="imu-panel">
+            <h2>IMU Tilt Data</h2>
+            <div style="display: flex; gap: 15px; align-items: flex-start;">
+                <!-- Horizon indicator -->
+                <div style="position: relative; width: 150px; height: 150px; border-radius: 50%; border: 2px solid #555; background: #1a1a1a; overflow: hidden; flex-shrink: 0;">
+                    <div id="imu-horizon" style="
+                        position: absolute;
+                        width: 220px;
+                        height: 150px;
+                        left: -35px;
+                        top: 0px;
+                        background: linear-gradient(to bottom, #1565C0 0%, #1565C0 50%, #795548 50%, #795548 100%);
+                        transform-origin: center center;
+                        transition: transform 0.1s linear;
+                    "></div>
+                    <!-- Crosshair -->
+                    <div style="position: absolute; top: 50%; left: 15px; right: 15px; height: 1px; background: rgba(255,255,255,0.5);"></div>
+                    <div style="position: absolute; left: 50%; top: 15px; bottom: 15px; width: 1px; background: rgba(255,255,255,0.5);"></div>
+                    <!-- Center dot -->
+                    <div style="position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; background: white; border-radius: 50%; transform: translate(-50%, -50%);"></div>
+                </div>
+                <!-- Readouts -->
+                <div style="flex: 1;">
+                    <div style="margin-bottom: 8px;">
+                        <label style="color: #2196F3; font-weight: bold; display: inline-block; width: 50px;">Pitch</label>
+                        <span id="imu-pitch" style="color: white; font-family: monospace; font-size: 18px;">--</span>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <label style="color: #4CAF50; font-weight: bold; display: inline-block; width: 50px;">Roll</label>
+                        <span id="imu-roll" style="color: white; font-family: monospace; font-size: 18px;">--</span>
+                    </div>
+                    <div style="margin-bottom: 12px;">
+                        <label style="color: #FF9800; font-weight: bold; display: inline-block; width: 50px;">Yaw</label>
+                        <span id="imu-yaw" style="color: white; font-family: monospace; font-size: 18px;">--</span>
+                    </div>
+                    <button id="imu-toggle-btn" onclick="toggleImuStream()" style="background-color: #4CAF50; color: white; padding: 6px 14px; border: none; cursor: pointer;">Start IMU Stream</button>
+                    <span id="imu-status" style="color: gray; font-size: 12px; margin-left: 8px;">Stopped</span>
+                </div>
             </div>
         </div>
 
@@ -304,19 +452,26 @@
                 return;
             }
 
+            console.log(`Starting WebRTC connection for ${path}`);
+            writeToConsole(`Starting WebRTC connection for ${path}`);
+
             const pc = new RTCPeerConnection({
                 iceServers: []
             });
 
             // Get video element stream
             pc.ontrack = (event) => {
+                console.log(`WebRTC track received for ${path}:`, event.track.kind, event.track);
                 if (event.track.kind === 'video') {
+                    console.log(`Setting video stream for ${path} on element:`, videoElement);
                     videoElement.srcObject = event.streams[0];
+                    console.log(`Video stream set for ${path}, srcObject:`, videoElement.srcObject);
                 }
             };
 
             // Handle connection state changes
             pc.onconnectionstatechange = () => {
+                console.log(`WebRTC connection state change for ${path}: ${pc.connectionState}`);
                 writeToConsole(`WebRTC connection state (${path}): ${pc.connectionState}`);
                 if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
                     writeToConsole(`WebRTC connection failed for ${path}, will retry...`);
@@ -327,27 +482,39 @@
 
             // Create WebSocket connection
             const ws = new WebSocket(`ws://${window.location.hostname}:8889/${path}/webrtc`);
+            console.log(`Creating WebSocket connection to ws://${window.location.hostname}:8889/${path}/webrtc`);
+
+            ws.onopen = () => {
+                console.log(`WebSocket opened for ${path}`);
+                writeToConsole(`WebSocket opened for ${path}`);
+            };
 
             ws.onmessage = async (ev) => {
                 try {
                     const msg = JSON.parse(ev.data);
+                    console.log(`WebSocket message received for ${path}:`, msg.type);
                     if (msg.type === 'answer') {
                         await pc.setRemoteDescription(msg);
+                        console.log(`Remote description set for ${path}`);
                     } else if (msg.type === 'candidate') {
                         await pc.addIceCandidate(msg);
+                        console.log(`ICE candidate added for ${path}`);
                     }
                 } catch (e) {
                     writeToConsole(`WebRTC error (${path}): ${e.message}`);
+                    console.error(`WebRTC error for ${path}:`, e);
                 }
             };
 
             ws.onerror = (error) => {
+                console.error(`WebSocket error for ${path}:`, error);
                 writeToConsole(`WebSocket error (${path}): Connection failed`);
                 // Don't try to reconnect immediately on error
                 webrtcConnections[path].connecting = false;
             };
 
-            ws.onclose = () => {
+            ws.onclose = (event) => {
+                console.log(`WebSocket closed for ${path}:`, event.code, event.reason);
                 writeToConsole(`WebSocket closed (${path})`);
                 // Only try to reconnect if we haven't already started a new connection
                 if (webrtcConnections[path] && !webrtcConnections[path].connecting) {
@@ -359,29 +526,38 @@
             // Add transceivers and create offer
             pc.addTransceiver('video', {direction: 'recvonly'});
             pc.addTransceiver('audio', {direction: 'recvonly'});
+            console.log(`Added transceivers for ${path}`);
             
             try {
                 const offer = await pc.createOffer();
+                console.log(`Created offer for ${path}:`, offer);
                 await pc.setLocalDescription(offer);
+                console.log(`Set local description for ${path}`);
 
                 // Wait for WebSocket to be ready
                 if (ws.readyState === WebSocket.CONNECTING) {
+                    console.log(`Waiting for WebSocket to be ready for ${path}...`);
                     await new Promise((resolve, reject) => {
                         ws.onopen = resolve;
                         setTimeout(() => reject(new Error('WebSocket connection timeout')), 5000);
                     });
+                    console.log(`WebSocket is now ready for ${path}`);
                 }
 
                 // Send offer
+                console.log(`Sending offer for ${path}:`, offer);
                 ws.send(JSON.stringify({
                     type: 'offer',
                     sdp: pc.localDescription.sdp
                 }));
+                console.log(`Offer sent for ${path}`);
 
                 // Store connection state
                 webrtcConnections[path] = { pc, ws, connecting: false };
+                console.log(`WebRTC connection stored for ${path}:`, webrtcConnections[path]);
                 return webrtcConnections[path];
             } catch (e) {
+                console.error(`WebRTC setup error for ${path}:`, e);
                 writeToConsole(`WebRTC setup error (${path}): ${e.message}`);
                 webrtcConnections[path] = { connecting: false };
                 throw e;
@@ -434,8 +610,23 @@
 
         function sendCommand(command, value) {
             if (socket.readyState === WebSocket.OPEN) {
-                socket.send(command + " " + value);
-                writeToConsole("Sent: " + command + " " + value);
+                // Apply backlash compensation for pan and tilt commands
+                let compensatedValue = value;
+                if (command === 'pan') {
+                    compensatedValue = applyBacklashCompensation('pan', value);
+                } else if (command === 'tilt') {
+                    compensatedValue = applyBacklashCompensation('tilt', value);
+                }
+                
+                socket.send(command + " " + compensatedValue);
+                writeToConsole("Sent: " + command + " " + compensatedValue);
+                
+                // Track step positions for pan and tilt commands (use original value for tracking)
+                if (command === 'pan') {
+                    updatePanPosition(value);
+                } else if (command === 'tilt') {
+                    updateTiltPosition(value);
+                }
                 
                 // If this is a capture command, refresh the image after a delay
                 if (command === 'capture') {
@@ -451,7 +642,253 @@
             const direction = reverse ? -1 : 1;
             const value = direction * parseInt(amount);
             
+            // Track steps for stepper commands (these go through sendCommand which will update positions)
             sendCommand(type, value);
+        }
+        
+        // Position tracking functions
+        function updatePanPosition(steps) {
+            currentPanSteps += parseInt(steps);
+            updatePositionDisplay();
+            writeToConsole(`Pan position updated: ${currentPanSteps} steps`);
+        }
+        
+        function updateTiltPosition(steps) {
+            currentTiltSteps += parseInt(steps);
+            updatePositionDisplay();
+            writeToConsole(`Tilt position updated: ${currentTiltSteps} steps`);
+        }
+        
+        function updatePositionDisplay() {
+            // Update the position display elements
+            document.getElementById('current-pan-position').textContent = currentPanSteps;
+            document.getElementById('current-tilt-position').textContent = currentTiltSteps;
+            
+            // Calculate total distance moved (Manhattan distance)
+            const panDistance = Math.abs(currentPanSteps - homePanSteps);
+            const tiltDistance = Math.abs(currentTiltSteps - homeTiltSteps);
+            totalDistanceMoved = panDistance + tiltDistance;
+            
+            document.getElementById('total-distance').textContent = totalDistanceMoved;
+            
+            // Save current position to localStorage for persistence
+            localStorage.setItem('currentPanSteps', currentPanSteps);
+            localStorage.setItem('currentTiltSteps', currentTiltSteps);
+        }
+        
+        // Homing functions
+        function setHomePosition() {
+            homePanSteps = currentPanSteps;
+            homeTiltSteps = currentTiltSteps;
+            
+            // Update home position display
+            document.getElementById('home-pan').textContent = homePanSteps;
+            document.getElementById('home-tilt').textContent = homeTiltSteps;
+            
+            // Save to localStorage for persistence
+            localStorage.setItem('homePanSteps', homePanSteps);
+            localStorage.setItem('homeTiltSteps', homeTiltSteps);
+            
+            writeToConsole(`Home position set: Pan ${homePanSteps}, Tilt ${homeTiltSteps}`);
+            
+            // Update total distance display
+            updatePositionDisplay();
+        }
+        
+        function goToHome() {
+            if (homePanSteps === 0 && homeTiltSteps === 0) {
+                writeToConsole("No home position set. Use 'Set Home Position' first.");
+                return;
+            }
+            
+            // Calculate steps needed to return to home
+            const panStepsToHome = homePanSteps - currentPanSteps;
+            const tiltStepsToHome = homeTiltSteps - currentTiltSteps;
+            
+            // Send commands to return to home position
+            if (panStepsToHome !== 0) {
+                sendCommand('pan', panStepsToHome);
+            }
+            if (tiltStepsToHome !== 0) {
+                sendCommand('tilt', tiltStepsToHome);
+            }
+            
+            writeToConsole(`Returning to home position: Pan ${panStepsToHome}, Tilt ${tiltStepsToHome}`);
+        }
+        
+        function resetPosition() {
+            // Reset current position to zero
+            currentPanSteps = 0;
+            currentTiltSteps = 0;
+            
+            // Update displays
+            updatePositionDisplay();
+            
+            writeToConsole("Position reset to zero");
+        }
+        
+        function initializePositionDisplay() {
+            // Load saved home position from localStorage
+            const savedHomePan = localStorage.getItem('homePanSteps');
+            const savedHomeTilt = localStorage.getItem('homeTiltSteps');
+            
+            if (savedHomePan !== null) {
+                homePanSteps = parseInt(savedHomePan);
+                document.getElementById('home-pan').textContent = homePanSteps;
+            }
+            if (savedHomeTilt !== null) {
+                homeTiltSteps = parseInt(savedHomeTilt);
+                document.getElementById('home-tilt').textContent = homeTiltSteps;
+            }
+            
+            // Load saved current position from localStorage
+            const savedCurrentPan = localStorage.getItem('currentPanSteps');
+            const savedCurrentTilt = localStorage.getItem('currentTiltSteps');
+            
+            if (savedCurrentPan !== null) {
+                currentPanSteps = parseInt(savedCurrentPan);
+            }
+            if (savedCurrentTilt !== null) {
+                currentTiltSteps = parseInt(savedCurrentTilt);
+            }
+            
+            // Load saved backlash values from localStorage
+            const savedPanBacklash = localStorage.getItem('panBacklash');
+            const savedTiltBacklash = localStorage.getItem('tiltBacklash');
+            
+            if (savedPanBacklash !== null) {
+                document.getElementById('pan-backlash').value = savedPanBacklash;
+            }
+            if (savedTiltBacklash !== null) {
+                document.getElementById('tilt-backlash').value = savedTiltBacklash;
+            }
+            
+            // Add event listeners to save backlash values when they change
+            document.getElementById('pan-backlash').addEventListener('change', function() {
+                localStorage.setItem('panBacklash', this.value);
+                writeToConsole(`Pan backlash set to ${this.value} steps`);
+            });
+            
+            document.getElementById('tilt-backlash').addEventListener('change', function() {
+                localStorage.setItem('tiltBacklash', this.value);
+                writeToConsole(`Tilt backlash set to ${this.value} steps`);
+            });
+            
+            // Initialize the position display with current values
+            updatePositionDisplay();
+            
+            // Initialize backlash status
+            updateBacklashStatus();
+            
+            writeToConsole("Position display initialized");
+        }
+        
+        function setManualPosition() {
+            const manualPan = parseInt(document.getElementById('manual-pan').value) || 0;
+            const manualTilt = parseInt(document.getElementById('manual-tilt').value) || 0;
+            
+            // Calculate steps needed to reach the desired position
+            const panStepsNeeded = manualPan - currentPanSteps;
+            const tiltStepsNeeded = manualTilt - currentTiltSteps;
+            
+            // Send commands to reach the desired position
+            if (panStepsNeeded !== 0) {
+                sendCommand('pan', panStepsNeeded);
+            }
+            if (tiltStepsNeeded !== 0) {
+                sendCommand('tilt', tiltStepsNeeded);
+            }
+            
+            writeToConsole(`Setting position to: Pan ${manualPan}, Tilt ${manualTilt}`);
+            
+            // Clear the input fields
+            document.getElementById('manual-pan').value = '';
+            document.getElementById('manual-tilt').value = '';
+        }
+        
+        function clearAllPositions() {
+            if (confirm("Are you sure you want to clear all saved positions? This will reset everything to zero.")) {
+                // Clear all position variables
+                currentPanSteps = 0;
+                currentTiltSteps = 0;
+                homePanSteps = 0;
+                homeTiltSteps = 0;
+                totalDistanceMoved = 0;
+                
+                // Reset backlash direction tracking
+                lastPanDirection = 0;
+                lastTiltDirection = 0;
+                
+                // Clear localStorage
+                localStorage.removeItem('currentPanSteps');
+                localStorage.removeItem('currentTiltSteps');
+                localStorage.removeItem('homePanSteps');
+                localStorage.removeItem('homeTiltSteps');
+                
+                // Update displays
+                updatePositionDisplay();
+                document.getElementById('home-pan').textContent = '0';
+                document.getElementById('home-tilt').textContent = '0';
+                
+                writeToConsole("All positions cleared and reset to zero");
+            }
+        }
+        
+        function applyBacklashCompensation(motorType, steps) {
+            if (steps === 0) return steps;
+            
+            const currentDirection = steps > 0 ? 1 : -1;
+            let lastDirection;
+            let backlashValue;
+            
+            if (motorType === 'pan') {
+                lastDirection = lastPanDirection;
+                backlashValue = parseInt(document.getElementById('pan-backlash').value) || 0;
+            } else if (motorType === 'tilt') {
+                lastDirection = lastTiltDirection;
+                backlashValue = parseInt(document.getElementById('tilt-backlash').value) || 0;
+            } else {
+                return steps; // Not a motor command
+            }
+            
+            // If direction changed and backlash compensation is enabled
+            if (lastDirection !== 0 && lastDirection !== currentDirection && backlashValue > 0) {
+                const compensation = currentDirection > 0 ? backlashValue : -backlashValue;
+                const totalSteps = steps + compensation;
+                
+                writeToConsole(`${motorType.toUpperCase()} backlash compensation: ${steps} + ${compensation} = ${totalSteps} steps`);
+                return totalSteps;
+            }
+            
+            // Update last direction for this motor
+            if (motorType === 'pan') {
+                lastPanDirection = currentDirection;
+            } else if (motorType === 'tilt') {
+                lastTiltDirection = currentDirection;
+            }
+            
+            // Update status display
+            updateBacklashStatus();
+            
+            return steps;
+        }
+        
+        function resetBacklashTracking() {
+            lastPanDirection = 0;
+            lastTiltDirection = 0;
+            updateBacklashStatus();
+            writeToConsole("Backlash direction tracking reset. Next movement will not trigger compensation.");
+        }
+        
+        function updateBacklashStatus() {
+            const statusElement = document.getElementById('backlash-status');
+            if (lastPanDirection === 0 && lastTiltDirection === 0) {
+                statusElement.textContent = 'Ready';
+                statusElement.style.color = '#4CAF50';
+            } else {
+                statusElement.textContent = `Tracking: Pan ${lastPanDirection > 0 ? '+' : lastPanDirection < 0 ? '-' : '0'}, Tilt ${lastTiltDirection > 0 ? '+' : lastTiltDirection < 0 ? '-' : '0'}`;
+                statusElement.style.color = '#FF9800';
+            }
         }
 
         function sendCustomAccel() {
@@ -497,7 +934,54 @@
             }
         }
 
+        // IMU stream state
+        let imuStreaming = false;
+
+        function toggleImuStream() {
+            if (imuStreaming) {
+                sendCommand('stop_imu_stream');
+                imuStreaming = false;
+                document.getElementById('imu-toggle-btn').style.backgroundColor = '#4CAF50';
+                document.getElementById('imu-toggle-btn').textContent = 'Start IMU Stream';
+                document.getElementById('imu-status').textContent = 'Stopped';
+                document.getElementById('imu-status').style.color = 'gray';
+            } else {
+                sendCommand('start_imu_stream');
+                imuStreaming = true;
+                document.getElementById('imu-toggle-btn').style.backgroundColor = '#F44336';
+                document.getElementById('imu-toggle-btn').textContent = 'Stop IMU Stream';
+                document.getElementById('imu-status').textContent = 'Streaming';
+                document.getElementById('imu-status').style.color = '#4CAF50';
+            }
+        }
+
+        function updateImuDisplay(data) {
+            const pitch = data.pitch.toFixed(1);
+            const roll = data.roll.toFixed(1);
+            const yaw = data.yaw.toFixed(1);
+
+            document.getElementById('imu-pitch').textContent = pitch + '\u00B0';
+            document.getElementById('imu-roll').textContent = roll + '\u00B0';
+            document.getElementById('imu-yaw').textContent = yaw + '\u00B0';
+
+            // Update horizon indicator: roll rotates, pitch shifts vertically
+            // Pitch=90 is level; tilting up (>90) pushes horizon down (more sky)
+            const horizon = document.getElementById('imu-horizon');
+            const pitchOffset = Math.max(-60, Math.min(60, (data.pitch - 90) * 1.5));
+            horizon.style.transform = 'rotate(' + data.roll + 'deg) translateY(' + pitchOffset + 'px)';
+        }
+
         function receiveResponse(response){
+            // Try to parse as JSON for IMU data
+            try {
+                const msg = JSON.parse(response);
+                if (msg.type === 'imu_data' && msg.data) {
+                    updateImuDisplay(msg.data);
+                    return; // Don't spam console with IMU data
+                }
+            } catch (e) {
+                // Not JSON, just a text message - fall through
+            }
             writeToConsole(response)
         }
 
@@ -529,6 +1013,17 @@
         // Click-to-Move Variables
         let clickToMoveEnabled = false;
         let stepperMapping = null;
+        
+        // Step Position Tracking Variables
+        let currentPanSteps = 0;
+        let currentTiltSteps = 0;
+        let homePanSteps = 0;
+        let homeTiltSteps = 0;
+        let totalDistanceMoved = 0;
+        
+        // Backlash Compensation Variables
+        let lastPanDirection = 0; // 0 = no movement, 1 = positive, -1 = negative
+        let lastTiltDirection = 0; // 0 = no movement, 1 = positive, -1 = negative
 
         // Add click event listener to overlay instead of iframe
         function setupClickToMove() {
@@ -822,14 +1317,360 @@
                 // Detect HTTP server port and update image source
                 await detectAndUpdatePort();
                 
+                console.log('DOMContentLoaded: Starting WebRTC connections...');
+                writeToConsole('Starting WebRTC connections...');
+                
                 await startWebRTC(document.getElementById('cam0-video'), 'cam0');
                 await startWebRTC(document.getElementById('cam1-video'), 'cam1');
                 
                 // Load stepper mapping
                 await loadStepperMapping();
+                
+                // Initialize position display
+                initializePositionDisplay();
+                
+                // Test MediaRecorder API
+                testMediaRecorderAPI();
+                
+                // Test WebSocket connections
+                testWebSocketConnections();
+                
+                // Debug WebRTC connections after a delay
+                setTimeout(() => {
+                    debugWebRTCConnections();
+                }, 5000);
+                
             } catch (e) {
                 console.error('Error starting WebRTC:', e);
+                writeToConsole(`Error starting WebRTC: ${e.message}`);
             }
+        });
+
+        // Debug function to check WebRTC connection status
+        function debugWebRTCConnections() {
+            console.log('Debugging WebRTC connections...');
+            writeToConsole('Debugging WebRTC connections...');
+            
+            Object.keys(webrtcConnections).forEach(cameraId => {
+                const connection = webrtcConnections[cameraId];
+                const videoElement = document.getElementById(`${cameraId}-video`);
+                
+                console.log(`Camera ${cameraId}:`);
+                console.log(`  - Connection:`, connection);
+                console.log(`  - Video element:`, videoElement);
+                console.log(`  - Video srcObject:`, videoElement ? videoElement.srcObject : 'N/A');
+                
+                if (connection && connection.pc) {
+                    console.log(`  - Connection state:`, connection.pc.connectionState);
+                    console.log(`  - ICE connection state:`, connection.pc.iceConnectionState);
+                    console.log(`  - Transceivers:`, connection.pc.getTransceivers());
+                }
+                
+                writeToConsole(`Camera ${cameraId}: Connection state: ${connection ? (connection.pc ? connection.pc.connectionState : 'No PC') : 'No connection'}`);
+            });
+        }
+
+        // Test function to verify MediaRecorder API is working
+        function testMediaRecorderAPI() {
+            try {
+                // Test if MediaRecorder is supported
+                if (typeof MediaRecorder === 'undefined') {
+                    writeToConsole('ERROR: MediaRecorder API not supported in this browser');
+                    console.error('MediaRecorder API not supported');
+                    return;
+                }
+                
+                // Test supported MIME types
+                const vp9Supported = MediaRecorder.isTypeSupported('video/webm;codecs=vp9');
+                const vp8Supported = MediaRecorder.isTypeSupported('video/webm;codecs=vp8');
+                
+                writeToConsole(`MediaRecorder API test: VP9 supported: ${vp9Supported}, VP8 supported: ${vp8Supported}`);
+                console.log(`MediaRecorder API test: VP9 supported: ${vp9Supported}, VP8 supported: ${vp8Supported}`);
+                
+                // Test creating a MediaRecorder with a dummy stream
+                const canvas = document.createElement('canvas');
+                canvas.width = 640;
+                canvas.height = 480;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = 'red';
+                ctx.fillRect(0, 0, 640, 480);
+                
+                const stream = canvas.captureStream(30); // 30 FPS
+                
+                const options = {
+                    mimeType: vp9Supported ? 'video/webm;codecs=vp9' : 'video/webm;codecs=vp8'
+                };
+                
+                const testRecorder = new MediaRecorder(stream, options);
+                writeToConsole('MediaRecorder API test: Successfully created MediaRecorder');
+                console.log('MediaRecorder API test: Successfully created MediaRecorder');
+                
+                // Clean up
+                testRecorder.stop();
+                
+            } catch (error) {
+                writeToConsole(`MediaRecorder API test failed: ${error.message}`);
+                console.error('MediaRecorder API test failed:', error);
+            }
+        }
+
+        // Test WebSocket connections to WebRTC server
+        function testWebSocketConnections() {
+            writeToConsole('Testing WebSocket connections to WebRTC server...');
+            console.log('Testing WebSocket connections...');
+            
+            const paths = ['cam0', 'cam1'];
+            const hostname = window.location.hostname;
+            
+            paths.forEach(path => {
+                const wsUrl = `ws://${hostname}:8889/${path}/webrtc`;
+                console.log(`Testing WebSocket connection to: ${wsUrl}`);
+                
+                const testWs = new WebSocket(wsUrl);
+                
+                testWs.onopen = () => {
+                    console.log(`✅ WebSocket connection successful to ${path}`);
+                    writeToConsole(`✅ WebSocket connection successful to ${path}`);
+                    testWs.close();
+                };
+                
+                testWs.onerror = (error) => {
+                    console.error(`❌ WebSocket connection failed to ${path}:`, error);
+                    writeToConsole(`❌ WebSocket connection failed to ${path}`);
+                };
+                
+                testWs.onclose = (event) => {
+                    console.log(`WebSocket test connection closed to ${path}:`, event.code, event.reason);
+                };
+                
+                // Timeout after 5 seconds
+                setTimeout(() => {
+                    if (testWs.readyState === WebSocket.CONNECTING) {
+                        console.log(`⏰ WebSocket connection timeout to ${path}`);
+                        writeToConsole(`⏰ WebSocket connection timeout to ${path}`);
+                        testWs.close();
+                    }
+                }, 5000);
+            });
+        }
+
+        // Recording functionality
+        const recordingStates = {
+            cam0: { isRecording: false, mediaRecorder: null, recordedChunks: [] },
+            cam1: { isRecording: false, mediaRecorder: null, recordedChunks: [] }
+        };
+
+        function toggleRecording(cameraId) {
+
+            const state = recordingStates[cameraId];
+            const button = document.getElementById(`record-${cameraId}`);
+            
+            if (state.isRecording) {
+                stopRecording(cameraId);
+            } else {
+                startRecording(cameraId);
+            }
+        }
+
+        function startRecording(cameraId) {
+            console.log("entered startRecording");
+            
+            const state = recordingStates[cameraId];
+            const button = document.getElementById(`record-${cameraId}`);
+            
+            // Try to get the video element first
+            let videoElement = document.getElementById(`${cameraId}-video`);
+            
+            // If video element doesn't exist or has no stream, try to create one
+            if (!videoElement || !videoElement.srcObject) {
+                console.log(`Video element for ${cameraId} not found or has no stream, creating new one`);
+                
+                // Create video element if it doesn't exist
+                if (!videoElement) {
+                    videoElement = document.createElement('video');
+                    videoElement.id = `${cameraId}-video`;
+                    videoElement.autoplay = true;
+                    videoElement.playsinline = true;
+                    videoElement.style.display = 'none'; // Hide it since we're using iframes
+                    document.body.appendChild(videoElement);
+                }
+                
+                // Try to get stream from WebRTC connection
+                if (webrtcConnections[cameraId] && webrtcConnections[cameraId].pc) {
+                    const pc = webrtcConnections[cameraId].pc;
+                    console.log(`WebRTC connection found for ${cameraId}, getting streams`);
+                    
+                    // Get all transceivers and find video streams
+                    const transceivers = pc.getTransceivers();
+                    let videoStream = null;
+                    
+                    for (const transceiver of transceivers) {
+                        if (transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind === 'video') {
+                            console.log(`Found video track for ${cameraId}`);
+                            // Create a new MediaStream with this track
+                            videoStream = new MediaStream([transceiver.receiver.track]);
+                            break;
+                        }
+                    }
+                    
+                    if (videoStream) {
+                        videoElement.srcObject = videoStream;
+                        console.log(`Set video stream for ${cameraId}`);
+                    } else {
+                        console.log(`No video stream found in WebRTC connection for ${cameraId}`);
+                        writeToConsole(`Cannot start recording ${cameraId}: No video stream available`);
+                        return;
+                    }
+                } else {
+                    console.log(`No WebRTC connection found for ${cameraId}`);
+                    writeToConsole(`Cannot start recording ${cameraId}: No WebRTC connection available`);
+                    return;
+                }
+            }
+            
+            console.log(`Video element for ${cameraId}:`, videoElement);
+            console.log(`Video srcObject:`, videoElement.srcObject);
+            
+            if (!videoElement.srcObject) {
+                writeToConsole(`Cannot start recording ${cameraId}: No video stream available`);
+                return;
+            }
+            
+            try {
+                // Reset recorded chunks
+                state.recordedChunks = [];
+                
+                // Create MediaRecorder with the video stream
+                const stream = videoElement.srcObject;
+                console.log(`Creating MediaRecorder for ${cameraId} with stream:`, stream);
+                
+                const options = {
+                    mimeType: 'video/webm;codecs=vp9',
+                    videoBitsPerSecond: 5000000 // 5 Mbps for good quality
+                };
+                
+                // Fallback to VP8 if VP9 is not supported
+                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                    options.mimeType = 'video/webm;codecs=vp8';
+                    console.log(`VP9 not supported, falling back to VP8`);
+                }
+                
+                console.log(`Using MIME type: ${options.mimeType}`);
+                
+                state.mediaRecorder = new MediaRecorder(stream, options);
+                console.log(`MediaRecorder created for ${cameraId}`);
+                
+                // Handle data available event
+                state.mediaRecorder.ondataavailable = (event) => {
+                    console.log(`Data available for ${cameraId}:`, event.data.size, 'bytes');
+                    if (event.data.size > 0) {
+                        state.recordedChunks.push(event.data);
+                    }
+                };
+                
+                // Handle recording stop event
+                state.mediaRecorder.onstop = () => {
+                    console.log(`Recording stopped for ${cameraId}`);
+                    downloadRecording(cameraId);
+                };
+                
+                // Handle recording start event
+                state.mediaRecorder.onstart = () => {
+                    console.log(`Recording started for ${cameraId}`);
+                };
+                
+                // Handle errors
+                state.mediaRecorder.onerror = (event) => {
+                    console.error(`MediaRecorder error for ${cameraId}:`, event);
+                    writeToConsole(`Recording error for ${cameraId}: ${event.error}`);
+                };
+                
+                // Start recording
+                state.mediaRecorder.start(1000); // Collect data every second
+                state.isRecording = true;
+                
+                // Update button appearance
+                button.textContent = 'Stop Recording';
+                button.style.backgroundColor = '#f44336';
+                button.classList.add('recording');
+                
+                writeToConsole(`Started recording ${cameraId}`);
+                console.log(`Recording started successfully for ${cameraId}`);
+                
+            } catch (error) {
+                console.error(`Error starting recording for ${cameraId}:`, error);
+                writeToConsole(`Error starting recording for ${cameraId}: ${error.message}`);
+            }
+        }
+
+        function stopRecording(cameraId) {
+            const state = recordingStates[cameraId];
+            const button = document.getElementById(`record-${cameraId}`);
+            
+            if (state.mediaRecorder && state.isRecording) {
+                state.mediaRecorder.stop();
+                state.isRecording = false;
+                
+                // Update button appearance
+                button.textContent = 'Start Recording';
+                button.style.backgroundColor = '#4CAF50';
+                button.classList.remove('recording');
+                
+                writeToConsole(`Stopped recording ${cameraId}`);
+            }
+        }
+
+        function downloadRecording(cameraId) {
+            const state = recordingStates[cameraId];
+            
+            if (state.recordedChunks.length === 0) {
+                writeToConsole(`No recording data available for ${cameraId}`);
+                return;
+            }
+            
+            try {
+                // Create blob from recorded chunks
+                const blob = new Blob(state.recordedChunks, { type: 'video/webm' });
+                
+                // Create download link
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = url;
+                
+                // Generate filename with timestamp
+                const now = new Date();
+                const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
+                a.download = `${cameraId}_recording_${timestamp}.webm`;
+                
+                // Trigger download
+                document.body.appendChild(a);
+                a.click();
+                
+                // Cleanup
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                }, 100);
+                
+                writeToConsole(`Recording ${cameraId} downloaded successfully`);
+                
+                // Reset recorded chunks
+                state.recordedChunks = [];
+                
+            } catch (error) {
+                writeToConsole(`Error downloading recording for ${cameraId}: ${error.message}`);
+            }
+        }
+
+        // Cleanup function for page unload
+        window.addEventListener('beforeunload', () => {
+            // Stop any active recordings
+            Object.keys(recordingStates).forEach(cameraId => {
+                if (recordingStates[cameraId].isRecording) {
+                    stopRecording(cameraId);
+                }
+            });
         });
 
         async function detectAndUpdatePort() {
@@ -867,6 +1708,67 @@
             
             // If no port detected, keep default (8000)
             writeToConsole("Could not detect HTTP server port, using default (8000)");
+        }
+
+        function testRecordingWithCanvas() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 640;
+            canvas.height = 480;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'red';
+            ctx.fillRect(0, 0, 640, 480);
+
+            const stream = canvas.captureStream(30); // 30 FPS
+
+            const options = {
+                mimeType: 'video/webm;codecs=vp9',
+                videoBitsPerSecond: 5000000 // 5 Mbps for good quality
+            };
+
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+                options.mimeType = 'video/webm;codecs=vp8';
+                console.log(`VP9 not supported, falling back to VP8 for canvas test`);
+            }
+
+            const testRecorder = new MediaRecorder(stream, options);
+            writeToConsole('Canvas test MediaRecorder created');
+
+            testRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    const blob = new Blob(event.data, { type: 'video/webm' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.style.display = 'none';
+                    a.href = url;
+                    a.download = 'canvas_test_recording.webm';
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(() => {
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(url);
+                    }, 100);
+                    writeToConsole('Canvas test recording downloaded');
+                }
+            };
+
+            testRecorder.onstop = () => {
+                writeToConsole('Canvas test recording stopped');
+            };
+
+            testRecorder.onerror = (event) => {
+                writeToConsole(`Canvas test MediaRecorder error: ${event.error}`);
+            };
+
+            testRecorder.start(1000); // Collect data every second
+            writeToConsole('Canvas test recording started');
+            
+            // Stop recording after 3 seconds
+            setTimeout(() => {
+                if (testRecorder.state === 'recording') {
+                    testRecorder.stop();
+                    writeToConsole('Canvas test recording stopped after timeout');
+                }
+            }, 3000);
         }
     </script>
 </body>

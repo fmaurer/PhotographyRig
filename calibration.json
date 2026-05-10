@@ -1,0 +1,9 @@
+{
+  "pitch_offset": -0.0753,
+  "roll_offset": 3.8124,
+  "raw_pitch_at_level": 89.9247,
+  "raw_roll_at_level": 3.8124,
+  "raw_yaw_at_level": 59.753,
+  "num_samples": 50,
+  "calibrated_at": "2026-03-05T21:05:38.555601"
+}

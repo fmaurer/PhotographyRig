@@ -10,6 +10,24 @@ import socket
 import signal
 import sys
 import threading
+import json
+import math
+
+# IMU imports
+try:
+    import board
+    import busio
+    from adafruit_bno08x import (
+        BNO_REPORT_ACCELEROMETER,
+        BNO_REPORT_GYROSCOPE,
+        BNO_REPORT_MAGNETOMETER,
+        BNO_REPORT_ROTATION_VECTOR,
+    )
+    from adafruit_bno08x.i2c import BNO08X_I2C
+    IMU_AVAILABLE = True
+except ImportError:
+    print("IMU libraries not available. IMU functionality will be disabled.")
+    IMU_AVAILABLE = False
 
 class WebSocketServer:
     def __init__(self, motor_controller, motor_controller2):
@@ -21,6 +39,29 @@ class WebSocketServer:
         self.current_pan_movement = None
         self.current_tilt_movement = None
         self.movement_lock = threading.Lock()
+        
+        # IMU setup
+        self.imu_data = {
+            'pitch': 0.0,
+            'roll': 0.0,
+            'yaw': 0.0,
+            'timestamp': 0.0
+        }
+        self.imu_lock = threading.Lock()
+        self.imu_thread = None
+        self.imu_running = False
+        self.bno = None
+
+        # IMU calibration offsets (loaded from calibration.json)
+        self.pitch_offset = 0.0
+        self.roll_offset = 0.0
+        self.load_imu_calibration()
+        
+        # Track connected clients for broadcasting
+        self.connected_clients = set()
+        
+        # Initialize IMU
+        self.setup_imu()
         
         # Remove redundant file server - main.py already handles this
         # self.file_server = self.start_file_server()
@@ -121,9 +162,10 @@ class WebSocketServer:
                     'source': 'publisher',
                     'sourceProtocol': 'tcp',
                     'runOnInit': 'bash -c \'rpicam-vid -t 0 --camera 1 --nopreview '
-                               '--codec yuv420 --width 1920 --height 1080 --inline '
-                               '--listen --shutter 1000 --level 3.1 -o - | '
-                               'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1920x1080 '
+                               '--codec yuv420 --width 1280 --height 720 --inline '
+                               '--listen --shutter 1000 --level 3.1 --hflip --vflip '
+                               '--lens-position 6 --autofocus-mode manual -o - | '
+                               'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1280x720 '
                                '-i /dev/stdin -c:v libx264 -preset ultrafast '
                                '-tune zerolatency -profile:v baseline '
                                '-b:v 1M -maxrate 1M -bufsize 500k '
@@ -138,6 +180,166 @@ class WebSocketServer:
             yaml.dump(data, file, default_flow_style=False)
             
         print("MediaMTX configuration updated with network-wide WebRTC access")
+
+    def setup_imu(self):
+        """Initialize the IMU sensor"""
+        if not IMU_AVAILABLE:
+            print("IMU libraries not available, skipping IMU initialization")
+            return
+
+        for attempt in range(3):
+            try:
+                i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
+                self.bno = BNO08X_I2C(i2c)
+                time.sleep(1)  # Give BNO08x time to boot before enabling features
+                self.bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
+                print("IMU initialized successfully")
+                # Start IMU data collection
+                self.start_imu_streaming()
+                return
+            except Exception as e:
+                print(f"IMU init attempt {attempt + 1}/3 failed: {e}")
+                self.bno = None
+                time.sleep(2)
+
+        print("IMU initialization failed after 3 attempts")
+
+    def load_imu_calibration(self):
+        """Load IMU calibration offsets from calibration.json"""
+        calibration_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'calibration.json')
+        try:
+            with open(calibration_path, 'r') as f:
+                cal = json.load(f)
+            self.pitch_offset = cal.get('pitch_offset', 0.0)
+            self.roll_offset = cal.get('roll_offset', 0.0)
+            print(f"IMU calibration loaded: pitch_offset={self.pitch_offset}, roll_offset={self.roll_offset}")
+        except FileNotFoundError:
+            print("No calibration.json found, using raw IMU values (no offsets applied)")
+        except Exception as e:
+            print(f"Error loading calibration.json: {e}, using raw IMU values")
+
+    def quaternion_to_euler(self, w, x, y, z):
+        """Convert quaternion to roll, pitch, yaw (radians)."""
+        # roll (x-axis rotation)
+        sinr_cosp = 2.0 * (w * x + y * z)
+        cosr_cosp = 1.0 - 2.0 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+
+        # pitch (y-axis rotation)
+        sinp = 2.0 * (w * y - z * x)
+        if abs(sinp) >= 1:
+            pitch = math.copysign(math.pi / 2, sinp)  # clamp to 90
+        else:
+            pitch = math.asin(sinp)
+
+        # yaw (z-axis rotation)
+        siny_cosp = 2.0 * (w * z + x * y)
+        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+
+        return roll, pitch, yaw
+
+    def imu_data_collection_loop(self):
+        """Background thread for collecting IMU data"""
+        while self.imu_running and self.bno:
+            try:
+                quat_i, quat_j, quat_k, quat_real = self.bno.quaternion  # (x, y, z, w)
+                rx, ry, rz = self.quaternion_to_euler(quat_real, quat_i, quat_j, quat_k)
+                
+                # Update IMU data with thread safety, applying calibration offsets
+                with self.imu_lock:
+                    self.imu_data = {
+                        'pitch': math.degrees(rx) - self.pitch_offset,
+                        'roll': math.degrees(ry) - self.roll_offset,
+                        'yaw': math.degrees(rz),
+                        'timestamp': time.time()
+                    }
+                
+                time.sleep(0.1)  # 10Hz update rate
+            except Exception as e:
+                print(f"Error reading IMU data: {e}")
+                time.sleep(1)
+
+    def start_imu_streaming(self):
+        """Start the IMU data collection thread"""
+        if self.bno:
+            self.imu_running = True
+            self.imu_thread = threading.Thread(
+                target=self.imu_data_collection_loop,
+                daemon=True,
+                name="IMU-Data-Collection"
+            )
+            self.imu_thread.start()
+            print("IMU data streaming started")
+
+    def stop_imu_streaming(self):
+        """Stop the IMU data collection thread"""
+        self.imu_running = False
+        if self.imu_thread:
+            self.imu_thread.join(timeout=1.0)
+            print("IMU data streaming stopped")
+
+    async def send_imu_data(self, websocket):
+        """Send current IMU data to a specific client"""
+        try:
+            with self.imu_lock:
+                imu_json = json.dumps({
+                    'type': 'imu_data',
+                    'data': self.imu_data.copy()
+                })
+            await websocket.send(imu_json)
+        except Exception as e:
+            print(f"Error sending IMU data: {e}")
+
+    async def broadcast_imu_data(self):
+        """Broadcast IMU data to all connected clients"""
+        if not self.connected_clients:
+            return
+            
+        try:
+            with self.imu_lock:
+                imu_json = json.dumps({
+                    'type': 'imu_data',
+                    'data': self.imu_data.copy()
+                })
+            
+            # Send to all connected clients
+            disconnected_clients = set()
+            for client in self.connected_clients:
+                try:
+                    await client.send(imu_json)
+                except websockets.exceptions.ConnectionClosed:
+                    disconnected_clients.add(client)
+            
+            # Clean up disconnected clients
+            self.connected_clients -= disconnected_clients
+            
+        except Exception as e:
+            print(f"Error broadcasting IMU data: {e}")
+
+    def start_imu_broadcast(self):
+        """Start broadcasting IMU data to all clients"""
+        if not hasattr(self, 'imu_broadcast_task') or self.imu_broadcast_task.done():
+            self.imu_broadcast_task = asyncio.create_task(self.imu_broadcast_loop())
+            print("IMU broadcast started")
+
+    def stop_imu_broadcast(self):
+        """Stop broadcasting IMU data"""
+        if hasattr(self, 'imu_broadcast_task') and not self.imu_broadcast_task.done():
+            self.imu_broadcast_task.cancel()
+            print("IMU broadcast stopped")
+
+    async def imu_broadcast_loop(self):
+        """Background task for broadcasting IMU data"""
+        while True:
+            try:
+                await self.broadcast_imu_data()
+                await asyncio.sleep(0.1)  # 10Hz broadcast rate
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                print(f"Error in IMU broadcast loop: {e}")
+                await asyncio.sleep(1)
 
     def start_stream(self, camera_index=None):
         """Start a single MediaMTX instance for both cameras"""
@@ -218,6 +420,10 @@ class WebSocketServer:
 
     async def handler(self, websocket):
         """Handle incoming WebSocket messages."""
+        # Add client to tracking set
+        self.connected_clients.add(websocket)
+        print(f"Client connected. Total clients: {len(self.connected_clients)}")
+        
         try:
             async for message in websocket:
                 print(f"Received message: {message}")
@@ -227,7 +433,17 @@ class WebSocketServer:
                     continue
                     
                 command = parts[0]
-                if command == "shutdown":
+                
+                # Handle IMU commands
+                if command == "get_imu":
+                    await self.send_imu_data(websocket)
+                elif command == "start_imu_stream":
+                    self.start_imu_broadcast()
+                    await websocket.send("IMU streaming started")
+                elif command == "stop_imu_stream":
+                    self.stop_imu_broadcast()
+                    await websocket.send("IMU streaming stopped")
+                elif command == "shutdown":
                     # Handle shutdown command (no parameters needed)
                     await websocket.send("Shutting down server...")
                     print("Shutdown command received from WebSocket client")
@@ -336,6 +552,10 @@ class WebSocketServer:
         except Exception as e:
             print(f"Error handling message: {e}")
             await websocket.send(f"Error: {str(e)}")
+        finally:
+            # Remove client from tracking set
+            self.connected_clients.discard(websocket)
+            print(f"Client disconnected. Total clients: {len(self.connected_clients)}")
 
     async def cancel_and_start_pan(self, steps):
         """Cancel ongoing pan movement and start new one"""
@@ -370,6 +590,12 @@ class WebSocketServer:
     async def graceful_shutdown(self):
         """Perform graceful shutdown of all processes"""
         print("Starting graceful shutdown...")
+        
+        # Stop IMU streaming
+        self.stop_imu_streaming()
+        
+        # Stop IMU broadcasting
+        self.stop_imu_broadcast()
         
         # Stop video streams
         self.stop_stream()

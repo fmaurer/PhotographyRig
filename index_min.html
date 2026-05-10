@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Star and Moon Photography - Minimal</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background-color: #1d1d1d; font-family: Arial, sans-serif; }
+        #container { width: 800px; margin: 10px auto; }
+
+        /* --- Streams row --- */
+        #stream-container {
+            width: 100%;
+            display: flex;
+            position: relative;
+            gap: 4px;
+            margin-bottom: 6px;
+        }
+        #stream-container iframe {
+            width: 365px;
+            height: 206px;
+            border: none;
+        }
+        #stream-container iframe:nth-child(2) { order: 3; }
+        #stream-container iframe:nth-child(2),
+        #last-capture-container { border: 4px solid #b80000; }
+        #last-capture-container {
+            width: 365px;
+            height: 206px;
+            overflow: hidden;
+            order: 2;
+        }
+        #last-capture-container img { width: 100%; }
+
+        /* --- Overlays on cam1 --- */
+        #cam1-overlay {
+            position: absolute; top: 0; left: 0;
+            width: 365px; height: 206px;
+            background: transparent; cursor: crosshair; z-index: 10;
+            display: none;
+        }
+        #red-zoom-indicator {
+            position: absolute; border: 1px solid red;
+            width: 9px; height: 6px; top: 88px; left: 180px;
+        }
+        #green-center-indicator {
+            position: absolute; border: 1px solid rgb(0,135,29);
+            width: 9px; height: 6px; top: 100px; left: 178px;
+        }
+
+        /* --- Compact control rows --- */
+        .ctrl-row {
+            display: flex; align-items: center; gap: 6px;
+            padding: 6px 8px; border: 1px solid #333; border-radius: 4px;
+            margin-bottom: 4px; flex-wrap: wrap;
+        }
+        .ctrl-row h3 {
+            color: gray; font-size: 12px; text-transform: uppercase;
+            width: 70px; flex-shrink: 0;
+        }
+        .btn {
+            background-color: gray; color: white; border: none;
+            padding: 6px 12px; font-size: 12px; font-weight: bold;
+            text-transform: uppercase; cursor: pointer; border-radius: 3px;
+        }
+        .btn:hover { filter: brightness(1.2); }
+        .btn-green { background-color: #4CAF50; }
+        .btn-red { background-color: #b80000; }
+        .btn-red:hover { background-color: #8b0000; }
+        .btn-blue { background-color: #2196F3; }
+
+        input[type="number"] {
+            width: 75px; background-color: #333; color: white;
+            padding: 5px; border: 1px solid #555; border-radius: 3px;
+            font-size: 12px;
+        }
+
+        /* --- IMU compact --- */
+        #imu-row {
+            display: flex; align-items: center; gap: 10px;
+            padding: 6px 8px; border: 1px solid #333; border-radius: 4px;
+            margin-bottom: 4px;
+        }
+        #imu-row h3 {
+            color: gray; font-size: 12px; text-transform: uppercase;
+            width: 70px; flex-shrink: 0;
+        }
+        .imu-horizon {
+            position: relative; width: 80px; height: 80px;
+            border-radius: 50%; border: 2px solid #555;
+            background: #1a1a1a; overflow: hidden; flex-shrink: 0;
+        }
+        .imu-readout { color: white; font-family: monospace; font-size: 13px; }
+        .imu-readout label { font-weight: bold; display: inline-block; width: 38px; }
+        .imu-readout .pitch-lbl { color: #2196F3; }
+        .imu-readout .roll-lbl  { color: #4CAF50; }
+        .imu-readout .yaw-lbl   { color: #FF9800; }
+
+        /* --- Console --- */
+        #console {
+            background-color: black; color: white;
+            width: 100%; height: 80px; border: none;
+            border-top: 3px solid #dedede; font-size: 11px;
+            font-family: monospace; resize: vertical;
+        }
+
+        /* --- Recording pulse --- */
+        .recording-button.recording { animation: pulse 2s infinite; }
+        @keyframes pulse { 0%{transform:scale(1)} 50%{transform:scale(1.05)} 100%{transform:scale(1)} }
+
+        /* --- Hidden video elements --- */
+        #cam0-container, #cam1-container { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="container">
+
+    <!-- Streams -->
+    <div id="stream-container">
+        <iframe src="http://frodo.local:8889/cam1/"></iframe>
+        <div id="cam1-overlay"></div>
+        <div id="red-zoom-indicator"></div>
+        <div id="green-center-indicator"></div>
+        <div id="last-capture-container">
+            <img id="last-capture" src="http://frodo.local:8000/captures/cam0_last.jpg">
+        </div>
+        <iframe src="http://frodo.local:8889/cam0/"></iframe>
+    </div>
+
+    <!-- Cam0: Photo / Refresh / Record -->
+    <div class="ctrl-row">
+        <h3>Cam 0</h3>
+        <button class="btn" onclick="sendCommand('capture', 0)">Take Photo</button>
+        <button class="btn" onclick="refreshCapturedImage()">&#x21BA; Refresh</button>
+        <button id="record-cam0" class="btn btn-green recording-button" onclick="toggleRecording('cam0')">Rec Cam0</button>
+        <button id="record-cam1" class="btn btn-green recording-button" onclick="toggleRecording('cam1')">Rec Cam1</button>
+    </div>
+
+    <!-- Pan / Tilt -->
+    <div class="ctrl-row">
+        <h3>Pan</h3>
+        <input type="number" id="pan-amount" value="133.3333" step="1">
+        <button class="btn" onclick="sendStepperCommand('pan')">&#9664; Left</button>
+        <button class="btn" onclick="sendStepperCommand('pan', true)">Right &#9654;</button>
+        <span style="color:#333;margin:0 4px;">|</span>
+        <h3 style="width:auto;">Tilt</h3>
+        <input type="number" id="tilt-amount" value="50" step="1">
+        <button class="btn" onclick="sendStepperCommand('tilt', true)">&#9650; Up</button>
+        <button class="btn" onclick="sendStepperCommand('tilt')">Down &#9660;</button>
+    </div>
+
+    <!-- Click-to-Move -->
+    <div class="ctrl-row">
+        <h3>Move</h3>
+        <button onclick="toggleClickToMove()" id="click-to-move-btn" class="btn btn-green">Enable Click-to-Move</button>
+        <span id="click-status" style="color: gray; font-size: 12px;">Disabled</span>
+    </div>
+
+    <!-- IMU -->
+    <div id="imu-row">
+        <h3>IMU</h3>
+        <div class="imu-horizon">
+            <div id="imu-horizon" style="
+                position: absolute; width: 120px; height: 80px;
+                left: -20px; top: 40px;
+                background: linear-gradient(to bottom, #1565C0 50%, #795548 50%);
+                transform-origin: center top; transition: transform 0.1s linear;
+            "></div>
+            <div style="position:absolute;top:50%;left:8px;right:8px;height:1px;background:rgba(255,255,255,0.5);"></div>
+            <div style="position:absolute;left:50%;top:8px;bottom:8px;width:1px;background:rgba(255,255,255,0.5);"></div>
+            <div style="position:absolute;top:50%;left:50%;width:5px;height:5px;background:white;border-radius:50%;transform:translate(-50%,-50%);"></div>
+        </div>
+        <div class="imu-readout">
+            <label class="pitch-lbl">Pitch</label><span id="imu-pitch">--</span>&ensp;
+            <label class="roll-lbl">Roll</label><span id="imu-roll">--</span>&ensp;
+            <label class="yaw-lbl">Yaw</label><span id="imu-yaw">--</span>
+        </div>
+        <button id="imu-toggle-btn" onclick="toggleImuStream()" class="btn btn-green" style="margin-left:auto;">Start IMU</button>
+        <span id="imu-status" style="color:gray;font-size:11px;">Stopped</span>
+    </div>
+
+    <!-- Shutdown -->
+    <div class="ctrl-row">
+        <h3>System</h3>
+        <button id="shutdown-button" class="btn btn-red" onclick="sendShutdownCommand()">&#x26D4; Shutdown</button>
+    </div>
+
+    <!-- Console -->
+    <textarea id="console">Console...</textarea>
+
+</div>
+
+<!-- Hidden video elements for WebRTC / recording -->
+<div id="cam0-container"><video id="cam0-video" autoplay playsinline></video></div>
+<div id="cam1-container"><video id="cam1-video" autoplay playsinline></video></div>
+
+<script>
+    // ──────────────────────────────────────────────
+    // All JS from index.html kept intact so every
+    // feature still works, just not all are surfaced.
+    // ──────────────────────────────────────────────
+
+    var socket = new WebSocket("ws://frodo.local:8765");
+
+    function connect(socket){
+        socket.onopen = function(event) { writeToConsole("Connection opened"); };
+        socket.onmessage = function(event) { receiveResponse(event.data); };
+        socket.onerror = function(error) { writeToConsole("Error: " + error.message); };
+        socket.onclose = function(event) {
+            writeToConsole("Connection closed: " + (event.wasClean ? "clean" : "unclean") +
+                ", Code: " + event.code + ", Reason: " + event.reason);
+            setTimeout(function() { writeToConsole("Attempting to reconnect..."); connect(); }, 3000);
+        };
+    }
+    connect(socket);
+
+    // ── WebRTC ──
+    const webrtcConnections = { cam0: null, cam1: null };
+
+    async function startWebRTC(videoElement, path) {
+        if (webrtcConnections[path] && webrtcConnections[path].connecting) {
+            writeToConsole(`Already trying to connect ${path}, skipping...`);
+            return;
+        }
+        writeToConsole(`Starting WebRTC connection for ${path}`);
+        const pc = new RTCPeerConnection({ iceServers: [] });
+
+        pc.ontrack = (event) => {
+            if (event.track.kind === 'video') videoElement.srcObject = event.streams[0];
+        };
+        pc.onconnectionstatechange = () => {
+            writeToConsole(`WebRTC (${path}): ${pc.connectionState}`);
+            if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected')
+                setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
+        };
+
+        const ws = new WebSocket(`ws://${window.location.hostname}:8889/${path}/webrtc`);
+        ws.onopen = () => writeToConsole(`WS opened for ${path}`);
+        ws.onmessage = async (ev) => {
+            try {
+                const msg = JSON.parse(ev.data);
+                if (msg.type === 'answer') await pc.setRemoteDescription(msg);
+                else if (msg.type === 'candidate') await pc.addIceCandidate(msg);
+            } catch (e) { writeToConsole(`WebRTC error (${path}): ${e.message}`); }
+        };
+        ws.onerror = () => { writeToConsole(`WS error (${path})`); webrtcConnections[path].connecting = false; };
+        ws.onclose = () => {
+            writeToConsole(`WS closed (${path})`);
+            if (webrtcConnections[path] && !webrtcConnections[path].connecting)
+                setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
+            webrtcConnections[path].connecting = false;
+        };
+
+        pc.addTransceiver('video', {direction: 'recvonly'});
+        pc.addTransceiver('audio', {direction: 'recvonly'});
+
+        try {
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            if (ws.readyState === WebSocket.CONNECTING)
+                await new Promise((resolve, reject) => { ws.onopen = resolve; setTimeout(() => reject(new Error('WS timeout')), 5000); });
+            ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+            webrtcConnections[path] = { pc, ws, connecting: false };
+            return webrtcConnections[path];
+        } catch (e) {
+            writeToConsole(`WebRTC setup error (${path}): ${e.message}`);
+            webrtcConnections[path] = { connecting: false };
+            throw e;
+        }
+    }
+
+    async function reconnectWebRTC(videoElement, path) {
+        try {
+            if (webrtcConnections[path] && webrtcConnections[path].connecting) return;
+            webrtcConnections[path] = { connecting: true };
+            if (webrtcConnections[path]) {
+                const { pc, ws } = webrtcConnections[path];
+                if (pc) pc.close();
+                if (ws && ws.readyState !== WebSocket.CLOSED) ws.close();
+            }
+            await startWebRTC(videoElement, path);
+        } catch (e) {
+            writeToConsole(`Reconnect error (${path}): ${e.message}`);
+            if (webrtcConnections[path]) webrtcConnections[path].connecting = false;
+            setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
+        }
+    }
+
+    // ── Commands ──
+    // Position tracking
+    let currentPanSteps = 0, currentTiltSteps = 0;
+    let homePanSteps = 0, homeTiltSteps = 0, totalDistanceMoved = 0;
+    // Backlash
+    let lastPanDirection = 0, lastTiltDirection = 0;
+
+    function sendCommand(command, value) {
+        if (socket.readyState === WebSocket.OPEN) {
+            let compensatedValue = value;
+            if (command === 'pan') compensatedValue = applyBacklashCompensation('pan', value);
+            else if (command === 'tilt') compensatedValue = applyBacklashCompensation('tilt', value);
+            socket.send(command + " " + compensatedValue);
+            writeToConsole("Sent: " + command + " " + compensatedValue);
+            if (command === 'pan') updatePanPosition(value);
+            else if (command === 'tilt') updateTiltPosition(value);
+            if (command === 'capture') setTimeout(refreshCapturedImage, 2000);
+        } else { writeToConsole("WebSocket is not connected"); }
+    }
+
+    function sendStepperCommand(type, reverse = false) {
+        const amount = document.getElementById(`${type}-amount`).value;
+        sendCommand(type, (reverse ? -1 : 1) * parseInt(amount));
+    }
+
+    function updatePanPosition(steps) { currentPanSteps += parseInt(steps); savePositions(); }
+    function updateTiltPosition(steps) { currentTiltSteps += parseInt(steps); savePositions(); }
+    function savePositions() {
+        localStorage.setItem('currentPanSteps', currentPanSteps);
+        localStorage.setItem('currentTiltSteps', currentTiltSteps);
+    }
+
+    function applyBacklashCompensation(motorType, steps) {
+        if (steps === 0) return steps;
+        const currentDirection = steps > 0 ? 1 : -1;
+        let lastDirection = motorType === 'pan' ? lastPanDirection : lastTiltDirection;
+        // No backlash inputs in minimal UI, use defaults
+        const backlashEl = document.getElementById(`${motorType}-backlash`);
+        const backlashValue = backlashEl ? parseInt(backlashEl.value) || 0 : (motorType === 'pan' ? 5 : 3);
+        if (lastDirection !== 0 && lastDirection !== currentDirection && backlashValue > 0) {
+            const compensation = currentDirection > 0 ? backlashValue : -backlashValue;
+            writeToConsole(`${motorType.toUpperCase()} backlash: ${steps} + ${compensation} = ${steps + compensation}`);
+            return steps + compensation;
+        }
+        if (motorType === 'pan') lastPanDirection = currentDirection;
+        else lastTiltDirection = currentDirection;
+        return steps;
+    }
+
+    // ── Shutdown ──
+    function sendShutdownCommand() {
+        if (confirm("Shutdown the system?")) {
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.send("shutdown");
+                writeToConsole("Sent: shutdown");
+                const btn = document.getElementById('shutdown-button');
+                btn.disabled = true; btn.textContent = "SHUTTING DOWN...";
+            } else { writeToConsole("WebSocket is not connected"); }
+        }
+    }
+
+    // ── IMU ──
+    let imuStreaming = false;
+    function toggleImuStream() {
+        if (imuStreaming) {
+            sendCommand('stop_imu_stream');
+            imuStreaming = false;
+            document.getElementById('imu-toggle-btn').style.backgroundColor = '#4CAF50';
+            document.getElementById('imu-toggle-btn').textContent = 'Start IMU';
+            document.getElementById('imu-status').textContent = 'Stopped';
+            document.getElementById('imu-status').style.color = 'gray';
+        } else {
+            sendCommand('start_imu_stream');
+            imuStreaming = true;
+            document.getElementById('imu-toggle-btn').style.backgroundColor = '#F44336';
+            document.getElementById('imu-toggle-btn').textContent = 'Stop IMU';
+            document.getElementById('imu-status').textContent = 'Streaming';
+            document.getElementById('imu-status').style.color = '#4CAF50';
+        }
+    }
+    function updateImuDisplay(data) {
+        document.getElementById('imu-pitch').textContent = data.pitch.toFixed(1) + '\u00B0';
+        document.getElementById('imu-roll').textContent  = data.roll.toFixed(1) + '\u00B0';
+        document.getElementById('imu-yaw').textContent   = data.yaw.toFixed(1) + '\u00B0';
+        const horizon = document.getElementById('imu-horizon');
+        const pitchOffset = Math.max(-60, Math.min(60, data.pitch * 1.5));
+        horizon.style.transform = 'rotate(' + data.roll + 'deg) translateY(' + (-pitchOffset) + 'px)';
+    }
+
+    // ── Console / Response ──
+    function receiveResponse(response) {
+        try {
+            const msg = JSON.parse(response);
+            if (msg.type === 'imu_data' && msg.data) { updateImuDisplay(msg.data); return; }
+        } catch (e) {}
+        writeToConsole(response);
+    }
+    function writeToConsole(str) {
+        var c = document.getElementById('console');
+        c.value += "\n" + str;
+        c.scrollTop = c.scrollHeight;
+    }
+
+    function refreshCapturedImage() {
+        const img = document.getElementById('last-capture');
+        let src = img.src.replace(/[?&]t=\d+/g, '');
+        img.src = src + (src.includes('?') ? '&' : '?') + 't=' + Date.now();
+        writeToConsole("Refreshing captured image...");
+    }
+
+    // ── Click-to-Move ──
+    let clickToMoveEnabled = false;
+    let stepperMapping = null;
+
+    function setupClickToMove() {
+        const overlay = document.getElementById('cam1-overlay');
+        if (overlay) {
+            overlay.addEventListener('click', handleCam1Click);
+            overlay.style.display = clickToMoveEnabled ? 'block' : 'none';
+        }
+    }
+
+    function handleCam1Click(event) {
+        if (!clickToMoveEnabled) return;
+        const overlay = event.target;
+        const rect = overlay.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const y = event.clientY - rect.top;
+        showClickIndicator(x, y);
+
+        const redDiv = document.getElementById('red-zoom-indicator');
+        const greenDiv = document.getElementById('green-center-indicator');
+        const streamContainer = document.getElementById('stream-container');
+
+        if (redDiv && greenDiv && streamContainer) {
+            const redRect = redDiv.getBoundingClientRect();
+            const cam1Iframe = streamContainer.querySelector('iframe');
+            const iframeRect = cam1Iframe.getBoundingClientRect();
+            const iframeCenterX = iframeRect.width / 2;
+            const iframeCenterY = iframeRect.height / 2;
+            const redCenterX = (redRect.left - iframeRect.left) + redRect.width/2;
+            const redCenterY = (redRect.top - iframeRect.top) + redRect.height/2;
+            const offsetX = redCenterX - iframeCenterX;
+            const offsetY = redCenterY - iframeCenterY;
+            const adjustedX = x - offsetX;
+            const adjustedY = y - offsetY;
+            const scaledX = (adjustedX / rect.width) * 1280;
+            const scaledY = (adjustedY / rect.height) * 720;
+            handleMoveClick(scaledX, scaledY);
+        } else {
+            handleMoveClick((x / rect.width) * 1280, (y / rect.height) * 720);
+        }
+    }
+
+    function showClickIndicator(x, y) {
+        const indicator = document.createElement('div');
+        indicator.style.cssText = `position:absolute;left:${x}px;top:${y}px;width:10px;height:10px;background:red;border-radius:50%;pointer-events:none;z-index:20;transform:translate(-50%,-50%);`;
+        const overlay = document.getElementById('cam1-overlay');
+        overlay.appendChild(indicator);
+        setTimeout(() => { if (indicator.parentNode) indicator.parentNode.removeChild(indicator); }, 1000);
+    }
+
+    function handleMoveClick(x, y) {
+        if (!stepperMapping) { writeToConsole("No calibration data. Loading..."); loadStepperMapping(); return; }
+        try {
+            const [yaw, pitch] = stepperMapping.get_angles(x, y);
+            writeToConsole(`Click (${x.toFixed(0)},${y.toFixed(0)}) → Yaw:${yaw.toFixed(2)}° Pitch:${pitch.toFixed(2)}°`);
+            sendCommand('pan', Math.round(-yaw * 2146));
+            sendCommand('tilt', Math.round(-pitch * 805));
+        } catch (error) { writeToConsole(`Angle error: ${error.message}`); }
+    }
+
+    function toggleClickToMove() {
+        clickToMoveEnabled = !clickToMoveEnabled;
+        const btn = document.getElementById('click-to-move-btn');
+        const status = document.getElementById('click-status');
+        const overlay = document.getElementById('cam1-overlay');
+        if (clickToMoveEnabled) {
+            btn.textContent = 'Disable Click-to-Move'; btn.style.backgroundColor = '#f44336';
+            status.textContent = 'Enabled'; status.style.color = '#4CAF50';
+            overlay.style.display = 'block'; setupClickToMove();
+            if (!stepperMapping) loadStepperMapping();
+        } else {
+            btn.textContent = 'Enable Click-to-Move'; btn.style.backgroundColor = '#4CAF50';
+            status.textContent = 'Disabled'; status.style.color = 'gray';
+            overlay.style.display = 'none';
+        }
+    }
+
+    // ── Stepper Mapping (lookup image) ──
+    class StepperMapping {
+        constructor() {
+            this.lookupImage = null; this.canvas = null; this.ctx = null;
+            this.loaded = false; this.HFOV_DEG = 42; this.VFOV_DEG = 20;
+        }
+        async loadLookupImage() {
+            this.canvas = document.createElement('canvas');
+            this.ctx = this.canvas.getContext('2d');
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            return new Promise((resolve, reject) => {
+                img.onload = () => {
+                    this.canvas.width = img.width; this.canvas.height = img.height;
+                    this.ctx.drawImage(img, 0, 0); this.loaded = true;
+                    writeToConsole(`Lookup image loaded: ${img.width}x${img.height}`);
+                    resolve();
+                };
+                img.onerror = () => reject(new Error('Failed to load lookup image'));
+                img.src = 'cameracalibration/angle_lookup.png';
+            });
+        }
+        decode_angle(r, g) {
+            return [(r / 255.0) * this.HFOV_DEG - this.HFOV_DEG / 2,
+                    (g / 255.0) * this.VFOV_DEG - this.VFOV_DEG / 2];
+        }
+        get_angles(x, y) {
+            if (!this.loaded) throw new Error('Lookup image not loaded');
+            const cx = Math.max(0, Math.min(this.canvas.width - 1, Math.round(x)));
+            const cy = Math.max(0, Math.min(this.canvas.height - 1, Math.round(y)));
+            const p = this.ctx.getImageData(cx, cy, 1, 1).data;
+            return this.decode_angle(p[0], p[1]);
+        }
+    }
+
+    async function loadStepperMapping() {
+        try {
+            stepperMapping = new StepperMapping();
+            await stepperMapping.loadLookupImage();
+            writeToConsole('Stepper mapping loaded');
+            const cx = Math.round(stepperMapping.canvas.width / 2);
+            const cy = Math.round(stepperMapping.canvas.height / 2);
+            const [y, p] = stepperMapping.get_angles(cx, cy);
+            writeToConsole(`Center test: Yaw=${y.toFixed(2)}° Pitch=${p.toFixed(2)}°`);
+        } catch (error) {
+            writeToConsole(`Mapping load failed: ${error.message}`);
+            stepperMapping = null;
+        }
+    }
+
+    // ── Recording ──
+    const recordingStates = {
+        cam0: { isRecording: false, mediaRecorder: null, recordedChunks: [] },
+        cam1: { isRecording: false, mediaRecorder: null, recordedChunks: [] }
+    };
+
+    function toggleRecording(cameraId) {
+        const state = recordingStates[cameraId];
+        if (state.isRecording) stopRecording(cameraId);
+        else startRecording(cameraId);
+    }
+
+    function startRecording(cameraId) {
+        const state = recordingStates[cameraId];
+        const button = document.getElementById(`record-${cameraId}`);
+        let videoElement = document.getElementById(`${cameraId}-video`);
+
+        if (!videoElement || !videoElement.srcObject) {
+            if (!videoElement) {
+                videoElement = document.createElement('video');
+                videoElement.id = `${cameraId}-video`;
+                videoElement.autoplay = true; videoElement.playsinline = true;
+                videoElement.style.display = 'none';
+                document.body.appendChild(videoElement);
+            }
+            if (webrtcConnections[cameraId] && webrtcConnections[cameraId].pc) {
+                const transceivers = webrtcConnections[cameraId].pc.getTransceivers();
+                for (const t of transceivers) {
+                    if (t.receiver && t.receiver.track && t.receiver.track.kind === 'video') {
+                        videoElement.srcObject = new MediaStream([t.receiver.track]); break;
+                    }
+                }
+            }
+            if (!videoElement.srcObject) { writeToConsole(`No stream for ${cameraId}`); return; }
+        }
+
+        try {
+            state.recordedChunks = [];
+            const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 5000000 };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) options.mimeType = 'video/webm;codecs=vp8';
+            state.mediaRecorder = new MediaRecorder(videoElement.srcObject, options);
+            state.mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) state.recordedChunks.push(e.data); };
+            state.mediaRecorder.onstop = () => downloadRecording(cameraId);
+            state.mediaRecorder.onerror = (e) => writeToConsole(`Rec error ${cameraId}: ${e.error}`);
+            state.mediaRecorder.start(1000);
+            state.isRecording = true;
+            button.textContent = `Stop ${cameraId.toUpperCase()}`;
+            button.style.backgroundColor = '#f44336';
+            button.classList.add('recording');
+            writeToConsole(`Recording ${cameraId}`);
+        } catch (error) { writeToConsole(`Rec start error ${cameraId}: ${error.message}`); }
+    }
+
+    function stopRecording(cameraId) {
+        const state = recordingStates[cameraId];
+        const button = document.getElementById(`record-${cameraId}`);
+        if (state.mediaRecorder && state.isRecording) {
+            state.mediaRecorder.stop(); state.isRecording = false;
+            button.textContent = `Rec ${cameraId.toUpperCase()}`;
+            button.style.backgroundColor = '#4CAF50';
+            button.classList.remove('recording');
+            writeToConsole(`Stopped ${cameraId}`);
+        }
+    }
+
+    function downloadRecording(cameraId) {
+        const state = recordingStates[cameraId];
+        if (state.recordedChunks.length === 0) return;
+        const blob = new Blob(state.recordedChunks, { type: 'video/webm' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none'; a.href = url;
+        a.download = `${cameraId}_${new Date().toISOString().replace(/[:.]/g, '-').slice(0,-5)}.webm`;
+        document.body.appendChild(a); a.click();
+        setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+        state.recordedChunks = [];
+        writeToConsole(`Downloaded ${cameraId} recording`);
+    }
+
+    window.addEventListener('beforeunload', () => {
+        Object.keys(recordingStates).forEach(id => { if (recordingStates[id].isRecording) stopRecording(id); });
+    });
+
+    // ── Port detection ──
+    async function detectAndUpdatePort() {
+        const ports = [8000, 8001, 8002, 8003, 8004];
+        for (const port of ports) {
+            try {
+                const ctrl = new AbortController();
+                setTimeout(() => ctrl.abort(), 1000);
+                const res = await fetch(`http://frodo.local:${port}/port-info`, { signal: ctrl.signal });
+                if (res.ok) {
+                    const data = await res.json();
+                    document.getElementById('last-capture').src = `http://frodo.local:${data.port}/captures/cam0_last.jpg`;
+                    writeToConsole(`HTTP server on port ${data.port}`);
+                    return;
+                }
+            } catch (e) { continue; }
+        }
+        writeToConsole("Using default port 8000");
+    }
+
+    // ── Init ──
+    document.addEventListener('DOMContentLoaded', async () => {
+        try {
+            await detectAndUpdatePort();
+            writeToConsole('Starting WebRTC...');
+            await startWebRTC(document.getElementById('cam0-video'), 'cam0');
+            await startWebRTC(document.getElementById('cam1-video'), 'cam1');
+            await loadStepperMapping();
+            // Restore positions from localStorage
+            currentPanSteps = parseInt(localStorage.getItem('currentPanSteps')) || 0;
+            currentTiltSteps = parseInt(localStorage.getItem('currentTiltSteps')) || 0;
+            homePanSteps = parseInt(localStorage.getItem('homePanSteps')) || 0;
+            homeTiltSteps = parseInt(localStorage.getItem('homeTiltSteps')) || 0;
+        } catch (e) { writeToConsole(`Init error: ${e.message}`); }
+    });
+</script>
+</body>
+</html>
