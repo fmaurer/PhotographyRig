@@ -1,0 +1,22 @@
+{
+  "ExposureTime": 64565,
+  "AnalogueGain": 4.0,
+  "AeEnable": true,
+  "AwbEnable": true,
+  "AwbMode": "auto",
+  "Transform": {
+    "hflip": false,
+    "vflip": false
+  },
+  "LensPosition": null,
+  "AfMode": null,
+  "StreamSize": [
+    1280,
+    720
+  ],
+  "StillSize": [
+    4056,
+    3040
+  ],
+  "ExposureValue": -0.7
+}

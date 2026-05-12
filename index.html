@@ -35,6 +35,47 @@
             font-weight: bold;
         }
 
+        .exposure-controls {
+            margin: 8px 0 4px 0;
+            padding: 8px 10px;
+            background-color: #2a2a2a;
+            border-radius: 5px;
+            font-family: sans-serif;
+        }
+        .exposure-controls .row {
+            display: grid;
+            grid-template-columns: 60px 1fr 80px;
+            align-items: center;
+            gap: 10px;
+            margin: 4px 0;
+        }
+        .exposure-controls label {
+            color: gray;
+            font-size: 13px;
+        }
+        .exposure-controls .value-readout {
+            color: #ddd;
+            font-family: monospace;
+            font-size: 13px;
+            text-align: right;
+        }
+        .exposure-controls input[type="range"] {
+            width: 100%;
+        }
+        .exposure-controls .ae-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+        .exposure-controls .ae-toggle label {
+            color: #ddd;
+            font-size: 13px;
+        }
+        .exposure-controls .hidden {
+            display: none;
+        }
+
         #capture-button{
             display: block;
             margin: 6px;
@@ -210,19 +251,65 @@
         <!-- Camera Controls -->
         <div class="camera-controls">
             <h2>Camera 0 Controls</h2>
-            <!-- <button class="exposure-button" onclick="sendCommand('exposeoutdoor', 0)">Daylight</button>
-            <button class="exposure-button" onclick="sendCommand('exposeinside', 0)">Inside</button>-->
             <button class="exposure-button" onclick="sendCommand('capture', 0)">Take Photo</button>
             <button class="exposure-button" onclick="refreshCapturedImage()">&#x21BA; Refresh Image</button>
             <button id="record-cam0" class="exposure-button recording-button" onclick="toggleRecording('cam0')" style="background-color: #4CAF50;">Start Recording</button>
+
+            <div class="exposure-controls" id="exposure-cam0">
+                <div class="ae-toggle">
+                    <label><input type="checkbox" id="ae-cam0" onchange="onAEToggle(0)"> Auto-exposure</label>
+                </div>
+                <div class="manual-group" id="manual-cam0">
+                    <div class="row">
+                        <label>Shutter</label>
+                        <input type="range" id="shutter-cam0" min="2" max="6" step="0.01" value="4.81" oninput="onShutterInput(0)">
+                        <span class="value-readout" id="shutter-cam0-val">65 ms</span>
+                    </div>
+                    <div class="row">
+                        <label>Gain</label>
+                        <input type="range" id="gain-cam0" min="1" max="16" step="0.1" value="4" oninput="onGainInput(0)">
+                        <span class="value-readout" id="gain-cam0-val">4.0&times;</span>
+                    </div>
+                </div>
+                <div class="auto-group hidden" id="auto-cam0">
+                    <div class="row">
+                        <label>EV bias</label>
+                        <input type="range" id="ev-cam0" min="-2" max="2" step="0.1" value="0" oninput="onEvInput(0)">
+                        <span class="value-readout" id="ev-cam0-val">0.0</span>
+                    </div>
+                </div>
+            </div>
         </div>
- 
+
         <div class="camera-controls">
             <h2>Camera 1 Controls</h2>
-            <!--<button class="exposure-button" onclick="sendCommand('exposeoutdoor', 1)">Daylight</button>
-            <button class="exposure-button" onclick="sendCommand('exposeinside', 1)">Inside</button>
-            <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>-->
+            <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>
             <button id="record-cam1" class="exposure-button recording-button" onclick="toggleRecording('cam1')" style="background-color: #4CAF50;">Start Recording</button>
+
+            <div class="exposure-controls" id="exposure-cam1">
+                <div class="ae-toggle">
+                    <label><input type="checkbox" id="ae-cam1" onchange="onAEToggle(1)"> Auto-exposure</label>
+                </div>
+                <div class="manual-group" id="manual-cam1">
+                    <div class="row">
+                        <label>Shutter</label>
+                        <input type="range" id="shutter-cam1" min="2" max="6" step="0.01" value="3" oninput="onShutterInput(1)">
+                        <span class="value-readout" id="shutter-cam1-val">1 ms</span>
+                    </div>
+                    <div class="row">
+                        <label>Gain</label>
+                        <input type="range" id="gain-cam1" min="1" max="64" step="0.5" value="1" oninput="onGainInput(1)">
+                        <span class="value-readout" id="gain-cam1-val">1.0&times;</span>
+                    </div>
+                </div>
+                <div class="auto-group hidden" id="auto-cam1">
+                    <div class="row">
+                        <label>EV bias</label>
+                        <input type="range" id="ev-cam1" min="-2" max="2" step="0.1" value="0" oninput="onEvInput(1)">
+                        <span class="value-readout" id="ev-cam1-val">0.0</span>
+                    </div>
+                </div>
+            </div>
         </div>
         
         <!-- System Controls -->
@@ -381,6 +468,64 @@
                     </div>
                     <button id="imu-toggle-btn" onclick="toggleImuStream()" style="background-color: #4CAF50; color: white; padding: 6px 14px; border: none; cursor: pointer;">Start IMU Stream</button>
                     <span id="imu-status" style="color: gray; font-size: 12px; margin-left: 8px;">Stopped</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Pointing Calibration -->
+        <div class="camera-controls" id="pointing-panel">
+            <h2>Pointing Calibration</h2>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #2196F3; font-size: 14px;">Observer Location</h3>
+                <input id="obs-lat" type="number" step="any" placeholder="lat" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <input id="obs-lon" type="number" step="any" placeholder="lon" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <input id="obs-alt" type="number" step="any" placeholder="alt (m)" value="0" style="width: 80px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <button onclick="setObserverLocation()" style="background-color: #2196F3; color: white; padding: 5px 12px; border: none; cursor: pointer;">Set</button>
+                <button onclick="useDeviceLocation()" style="background-color: #555; color: white; padding: 5px 12px; border: none; cursor: pointer; margin-left: 4px;">Use Device GPS</button>
+                <div id="obs-display" style="color: #999; font-size: 12px; margin-top: 6px; font-family: monospace;">No observer set</div>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #FF9800; font-size: 14px;">Add Reference</h3>
+                <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">Manually slew until target is centered, then capture using the current motor position.</div>
+                <input id="ref-name" placeholder="name" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <input id="ref-lat" type="number" step="any" placeholder="lat" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <input id="ref-lon" type="number" step="any" placeholder="lon" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <input id="ref-alt" type="number" step="any" placeholder="alt (m)" value="0" style="width: 80px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <button onclick="capturePointingReference()" style="background-color: #FF9800; color: white; padding: 5px 12px; border: none; cursor: pointer;">Capture</button>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #4CAF50; font-size: 14px;">References</h3>
+                <div id="refs-list" style="font-size: 12px; color: #ccc; font-family: monospace;">No references added</div>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #9C27B0; font-size: 14px;">Calibration</h3>
+                <button onclick="computePointingCalibration()" style="background-color: #9C27B0; color: white; padding: 5px 12px; border: none; cursor: pointer;">Compute</button>
+                <div id="cal-display" style="font-size: 12px; color: #ccc; margin-top: 6px; font-family: monospace;">Not calibrated</div>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #FF5722; font-size: 14px;">Go To Lat/Lon</h3>
+                <input id="goto-lat" type="number" step="any" placeholder="lat" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <input id="goto-lon" type="number" step="any" placeholder="lon" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <input id="goto-alt" type="number" step="any" placeholder="alt (m)" value="0" style="width: 80px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                <button onclick="gotoLatLon()" style="background-color: #FF5722; color: white; padding: 5px 12px; border: none; cursor: pointer;">Go</button>
+            </div>
+
+            <div style="padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #00BCD4; font-size: 14px;">Live Position (server)</h3>
+                <div style="font-family: monospace; font-size: 13px; color: white;">
+                    Pan: <span id="pos-pan-steps">--</span> steps &nbsp;&nbsp; Tilt: <span id="pos-tilt-steps">--</span> steps
+                </div>
+                <div style="font-family: monospace; font-size: 13px; color: white; margin-top: 2px;">
+                    Az: <span id="pos-az">--</span> &nbsp;&nbsp; El: <span id="pos-el">--</span>
+                </div>
+                <div style="margin-top: 6px;">
+                    <button onclick="homePointing()" style="background-color: #607D8B; color: white; padding: 5px 12px; border: none; cursor: pointer;">Zero Counters</button>
+                    <button onclick="refreshPointingState()" style="background-color: #555; color: white; padding: 5px 12px; border: none; cursor: pointer; margin-left: 4px;">Refresh</button>
                 </div>
             </div>
         </div>
@@ -634,6 +779,58 @@
                 }
             } else {
                 writeToConsole("WebSocket is not connected");
+            }
+        }
+
+        // ---- Camera exposure controls -----------------------------------------
+        // Slider value is log10(microseconds), so log_us=3 -> 1 ms, 6 -> 1 s.
+        const exposureSendThrottle = { 0: null, 1: null };
+        function throttleSend(cam, fn) {
+            if (exposureSendThrottle[cam]) return;
+            exposureSendThrottle[cam] = setTimeout(() => {
+                exposureSendThrottle[cam] = null;
+                fn();
+            }, 80);
+        }
+        function formatShutter(us) {
+            if (us >= 1_000_000) return (us / 1_000_000).toFixed(2) + " s";
+            if (us >= 1000) return (us / 1000).toFixed(us >= 10_000 ? 0 : 1) + " ms";
+            return Math.round(us) + " µs";
+        }
+        function sendCamWS(text) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(text);
+                writeToConsole("Sent: " + text);
+            }
+        }
+        function onShutterInput(cam) {
+            const slider = document.getElementById(`shutter-cam${cam}`);
+            const us = Math.round(Math.pow(10, parseFloat(slider.value)));
+            document.getElementById(`shutter-cam${cam}-val`).textContent = formatShutter(us);
+            throttleSend(cam, () => sendCamWS(`shuttercam ${us} ${cam}`));
+        }
+        function onGainInput(cam) {
+            const slider = document.getElementById(`gain-cam${cam}`);
+            const g = parseFloat(slider.value);
+            document.getElementById(`gain-cam${cam}-val`).textContent = g.toFixed(1) + "×";
+            throttleSend(cam, () => sendCamWS(`gain ${g} ${cam}`));
+        }
+        function onEvInput(cam) {
+            const slider = document.getElementById(`ev-cam${cam}`);
+            const ev = parseFloat(slider.value);
+            document.getElementById(`ev-cam${cam}-val`).textContent = (ev >= 0 ? "+" : "") + ev.toFixed(1);
+            throttleSend(cam, () => sendCamWS(`ev ${ev} ${cam}`));
+        }
+        function onAEToggle(cam) {
+            const on = document.getElementById(`ae-cam${cam}`).checked;
+            document.getElementById(`manual-cam${cam}`).classList.toggle("hidden", on);
+            document.getElementById(`auto-cam${cam}`).classList.toggle("hidden", !on);
+            sendCamWS(`ae ${on ? "on" : "off"} ${cam}`);
+            // When flipping back to manual, re-apply the sliders so the camera
+            // matches the displayed values (server may have moved under AE).
+            if (!on) {
+                onShutterInput(cam);
+                onGainInput(cam);
             }
         }
 
@@ -971,13 +1168,158 @@
             horizon.style.transform = 'rotate(' + data.roll + 'deg) translateY(' + pitchOffset + 'px)';
         }
 
+        // ---- Pointing calibration ----
+        function sendRawCommand(text) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(text);
+                writeToConsole("Sent: " + text);
+            } else {
+                writeToConsole("WebSocket is not connected");
+            }
+        }
+
+        function quietSend(text) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(text);
+            }
+        }
+
+        function setObserverLocation() {
+            const lat = document.getElementById('obs-lat').value;
+            const lon = document.getElementById('obs-lon').value;
+            const alt = document.getElementById('obs-alt').value || '0';
+            if (lat === '' || lon === '') { writeToConsole("Observer requires lat and lon"); return; }
+            sendRawCommand(`set_observer_location ${lat} ${lon} ${alt}`);
+        }
+
+        function useDeviceLocation() {
+            if (!navigator.geolocation) { writeToConsole("Geolocation not available"); return; }
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    document.getElementById('obs-lat').value = pos.coords.latitude.toFixed(7);
+                    document.getElementById('obs-lon').value = pos.coords.longitude.toFixed(7);
+                    document.getElementById('obs-alt').value = (pos.coords.altitude || 0).toFixed(1);
+                    setObserverLocation();
+                },
+                (err) => writeToConsole("Geolocation error: " + err.message),
+                { enableHighAccuracy: true, timeout: 10000 }
+            );
+        }
+
+        function capturePointingReference() {
+            const name = document.getElementById('ref-name').value.trim();
+            const lat = document.getElementById('ref-lat').value;
+            const lon = document.getElementById('ref-lon').value;
+            const alt = document.getElementById('ref-alt').value || '0';
+            if (!name || /\s/.test(name)) { writeToConsole("Reference name must be non-empty and have no spaces"); return; }
+            if (lat === '' || lon === '') { writeToConsole("Reference requires lat and lon"); return; }
+            sendRawCommand(`add_pointing_reference ${name} ${lat} ${lon} ${alt}`);
+        }
+
+        function removePointingReference(name) {
+            sendRawCommand(`remove_pointing_reference ${name}`);
+        }
+
+        function computePointingCalibration() {
+            sendRawCommand('compute_pointing_calibration');
+        }
+
+        function gotoLatLon() {
+            const lat = document.getElementById('goto-lat').value;
+            const lon = document.getElementById('goto-lon').value;
+            const alt = document.getElementById('goto-alt').value || '0';
+            if (lat === '' || lon === '') { writeToConsole("Goto requires lat and lon"); return; }
+            sendRawCommand(`goto_latlon ${lat} ${lon} ${alt}`);
+        }
+
+        function refreshPointingState() {
+            sendRawCommand('get_pointing_state');
+        }
+
+        function homePointing() {
+            sendRawCommand('home_pointing');
+        }
+
+        function renderPointingState(data) {
+            if (!data) return;
+
+            const obsDisp = document.getElementById('obs-display');
+            if (data.observer) {
+                const o = data.observer;
+                obsDisp.textContent = `Observer: ${Number(o.lat).toFixed(6)}, ${Number(o.lon).toFixed(6)}, ${Number(o.alt_m).toFixed(1)} m`;
+            } else {
+                obsDisp.textContent = "No observer set";
+            }
+
+            const refsEl = document.getElementById('refs-list');
+            if (!data.references || data.references.length === 0) {
+                refsEl.textContent = "No references added";
+            } else {
+                refsEl.innerHTML = '';
+                for (const r of data.references) {
+                    const row = document.createElement('div');
+                    row.style.padding = '2px 0';
+                    const text = document.createElement('span');
+                    text.textContent = `${r.name} \u2014 ${Number(r.lat).toFixed(5)}, ${Number(r.lon).toFixed(5)}, ${Number(r.alt_m).toFixed(0)} m \u2014 pan=${r.pan_steps}, tilt=${r.tilt_steps}  `;
+                    row.appendChild(text);
+                    const btn = document.createElement('button');
+                    btn.textContent = 'remove';
+                    btn.style.cssText = 'background: #444; color: white; border: none; padding: 1px 6px; cursor: pointer; font-size: 11px;';
+                    btn.onclick = () => removePointingReference(r.name);
+                    row.appendChild(btn);
+                    refsEl.appendChild(row);
+                }
+            }
+
+            const calEl = document.getElementById('cal-display');
+            if (data.calibration) {
+                const c = data.calibration;
+                calEl.innerHTML =
+                    `pan: ${Number(c.pan_steps_per_deg).toFixed(2)} steps/\u00B0, offset ${Number(c.pan_offset_steps).toFixed(0)}<br>` +
+                    `tilt: ${Number(c.tilt_steps_per_deg).toFixed(2)} steps/\u00B0, offset ${Number(c.tilt_offset_steps).toFixed(0)}<br>` +
+                    `RMS: ${Number(c.rms_residual_deg).toFixed(3)}\u00B0 (${c.n_references} refs)`;
+            } else {
+                calEl.textContent = "Not calibrated";
+            }
+
+            document.getElementById('pos-pan-steps').textContent = data.current_pan_steps;
+            document.getElementById('pos-tilt-steps').textContent = data.current_tilt_steps;
+            if (data.current_az_deg !== null && data.current_az_deg !== undefined) {
+                document.getElementById('pos-az').textContent = Number(data.current_az_deg).toFixed(2) + '\u00B0';
+                document.getElementById('pos-el').textContent = Number(data.current_el_deg).toFixed(2) + '\u00B0';
+            } else {
+                document.getElementById('pos-az').textContent = '--';
+                document.getElementById('pos-el').textContent = '--';
+            }
+        }
+
+        // Poll pointing state at 1 Hz so live position animates during slews.
+        setInterval(() => quietSend('get_pointing_state'), 1000);
+
         function receiveResponse(response){
-            // Try to parse as JSON for IMU data
+            // Try to parse as JSON for structured messages
             try {
                 const msg = JSON.parse(response);
                 if (msg.type === 'imu_data' && msg.data) {
                     updateImuDisplay(msg.data);
                     return; // Don't spam console with IMU data
+                }
+                if (msg.type === 'pointing_state' && msg.data) {
+                    renderPointingState(msg.data);
+                    if (msg.message) writeToConsole(msg.message);
+                    return;
+                }
+                if (msg.type === 'goto_result') {
+                    if (msg.ok && msg.data) {
+                        const d = msg.data;
+                        writeToConsole(
+                            `Goto: az=${Number(d.az_deg).toFixed(2)}°, el=${Number(d.el_deg).toFixed(2)}°, ` +
+                            `pan_delta=${d.pan_delta_steps}, tilt_delta=${d.tilt_delta_steps}`
+                        );
+                    } else {
+                        writeToConsole(`Goto failed: ${msg.message || 'unknown error'}`);
+                    }
+                    return;
                 }
             } catch (e) {
                 // Not JSON, just a text message - fall through

@@ -3,6 +3,7 @@ from TMC2208Driver import TMC2208Driver
 from motor_controller import MotorController
 from astro_controller import AstroController
 from websocket_server import WebSocketServer
+from camera_manager import CameraManager
 from astropy.coordinates import EarthLocation
 from astropy import units as u
 import threading
@@ -158,9 +159,12 @@ def main():
     http_server_info['thread'] = http_thread
     print("Started HTTP server thread")
 
-    # Initialize the WebSocket server
-    #TODO: figure out how to trigger photos
-    websocket_server = WebSocketServer(pan_motor_controller, tilt_motor_controller)
+    # Camera manager owns Picamera2 instances and pushes H.264 into MediaMTX.
+    camera_manager = CameraManager()
+
+    # Initialize the WebSocket server (it starts MediaMTX, then CameraManager).
+    websocket_server = WebSocketServer(pan_motor_controller, tilt_motor_controller,
+                                       camera_manager=camera_manager)
 
     # Set up signal handlers for graceful shutdown
     def signal_handler(signum, frame):

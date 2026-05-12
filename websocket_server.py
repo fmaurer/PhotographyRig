@@ -4,7 +4,6 @@ import subprocess
 import os
 import datetime
 import yaml
-import re
 import time
 import socket
 import signal
@@ -29,11 +28,14 @@ except ImportError:
     print("IMU libraries not available. IMU functionality will be disabled.")
     IMU_AVAILABLE = False
 
+from pointing_calibration import PointingCalibration, earth_to_azel
+
 class WebSocketServer:
-    def __init__(self, motor_controller, motor_controller2):
+    def __init__(self, motor_controller, motor_controller2, camera_manager=None):
         self.SYMLINK_PATH = '/home/frodo/PhotographyRig/captures/'
         self.motor_controller = motor_controller
         self.motor_controller_tilt = motor_controller2
+        self.camera_manager = camera_manager
         
         # Add movement tracking to prevent command stacking
         self.current_pan_movement = None
@@ -62,6 +64,18 @@ class WebSocketServer:
         
         # Initialize IMU
         self.setup_imu()
+
+        # Pointing calibration: (lat,lon,alt) -> motor steps mapping.
+        pointing_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     'pointing_calibration.json')
+        self.pointing = PointingCalibration(pointing_path)
+        if self.pointing.observer:
+            print(f"Pointing observer loaded: lat={self.pointing.observer.lat}, "
+                  f"lon={self.pointing.observer.lon}, alt={self.pointing.observer.alt_m}m")
+        if self.pointing.fit:
+            print(f"Pointing calibration loaded: pan_k={self.pointing.fit.pan_steps_per_deg:.2f} "
+                  f"steps/deg, tilt_k={self.pointing.fit.tilt_steps_per_deg:.2f} steps/deg, "
+                  f"rms={self.pointing.fit.rms_residual_deg:.3f} deg")
         
         # Remove redundant file server - main.py already handles this
         # self.file_server = self.start_file_server()
@@ -74,11 +88,21 @@ class WebSocketServer:
         signal.signal(signal.SIGTERM, self.handle_shutdown)
         signal.signal(signal.SIGINT, self.handle_shutdown)
         
-        # Start the stream
+        # Start MediaMTX (now just a relay — no per-camera runOnInit).
         self.setup_stream_configs()
         self.videostream_process = self.start_stream()
-        print("Video streams started")
-        
+        print("MediaMTX started")
+
+        # CameraManager owns the Picamera2 instances and pushes H.264 into MediaMTX.
+        # MediaMTX needs a moment to bind its RTSP listener before publishers connect.
+        if self.camera_manager is not None:
+            time.sleep(1)
+            self.camera_manager.start_all()
+            print("Camera streams started")
+        else:
+            print("WARN: WebSocketServer started without a CameraManager — "
+                  "live preview will be unavailable.")
+
         self.capture_process = None
         self.start_server()
         print("Websocket server started")
@@ -144,33 +168,17 @@ class WebSocketServer:
             # Get IPs from network interfaces
             'webrtcIPsFromInterfaces': True,
             
+            # Paths are pure publishers. CameraManager pushes H.264 into them via
+            # Picamera2 -> ffmpeg -> RTSP. No runOnInit anymore — exposure and
+            # other controls are applied live via libcamera set_controls().
             'paths': {
                 'cam0': {
                     'source': 'publisher',
                     'sourceProtocol': 'tcp',
-                    'runOnInit': 'bash -c \'rpicam-vid -t 0 --camera 0 --nopreview '
-                               '--codec yuv420 --width 1280 --height 720 --inline '
-                               '--listen --shutter 100000 --level 3.1 -o - | '
-                               'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1280x720 '
-                               '-i /dev/stdin -c:v libx264 -preset ultrafast '
-                               '-tune zerolatency -profile:v baseline '
-                               '-b:v 1M -maxrate 1M -bufsize 500k '
-                               '-rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam0\'',
-                    'runOnInitRestart': True
                 },
                 'cam1': {
                     'source': 'publisher',
                     'sourceProtocol': 'tcp',
-                    'runOnInit': 'bash -c \'rpicam-vid -t 0 --camera 1 --nopreview '
-                               '--codec yuv420 --width 1280 --height 720 --inline '
-                               '--listen --shutter 1000 --level 3.1 --hflip --vflip '
-                               '--lens-position 6 --autofocus-mode manual -o - | '
-                               'ffmpeg -f rawvideo -pix_fmt yuv420p -s:v 1280x720 '
-                               '-i /dev/stdin -c:v libx264 -preset ultrafast '
-                               '-tune zerolatency -profile:v baseline '
-                               '-b:v 1M -maxrate 1M -bufsize 500k '
-                               '-rtsp_transport tcp -f rtsp rtsp://localhost:8554/cam1\'',
-                    'runOnInitRestart': True
                 }
             }
         }
@@ -341,6 +349,54 @@ class WebSocketServer:
                 print(f"Error in IMU broadcast loop: {e}")
                 await asyncio.sleep(1)
 
+    # ---- pointing-calibration helpers --------------------------------------
+
+    def _pan_steps_now(self):
+        return self.motor_controller.driver.total_signed_steps
+
+    def _tilt_steps_now(self):
+        return self.motor_controller_tilt.driver.total_signed_steps
+
+    def _pointing_state_dict(self):
+        state = self.pointing.state_dict()
+        pan_now = self._pan_steps_now()
+        tilt_now = self._tilt_steps_now()
+        state['current_pan_steps'] = pan_now
+        state['current_tilt_steps'] = tilt_now
+        if self.pointing.fit:
+            try:
+                az, el = self.pointing.steps_to_azel(pan_now, tilt_now)
+                state['current_az_deg'] = az
+                state['current_el_deg'] = el
+            except Exception:
+                state['current_az_deg'] = None
+                state['current_el_deg'] = None
+        else:
+            state['current_az_deg'] = None
+            state['current_el_deg'] = None
+        return state
+
+    async def _send_pointing_state(self, websocket, ok=True, message=None):
+        payload = {'type': 'pointing_state', 'ok': ok}
+        if message is not None:
+            payload['message'] = message
+        payload['data'] = self._pointing_state_dict()
+        await websocket.send(json.dumps(payload))
+
+    async def _do_goto_latlon(self, lat, lon, alt_m):
+        pan_target, tilt_target, az, el = self.pointing.latlon_to_steps(lat, lon, alt_m)
+        pan_now = self._pan_steps_now()
+        tilt_now = self._tilt_steps_now()
+        pan_delta = pan_target - pan_now
+        tilt_delta = tilt_target - tilt_now
+        await self.cancel_and_start_pan(pan_delta)
+        await self.cancel_and_start_tilt(tilt_delta)
+        return {
+            'az_deg': az, 'el_deg': el,
+            'pan_target_steps': pan_target, 'tilt_target_steps': tilt_target,
+            'pan_delta_steps': pan_delta, 'tilt_delta_steps': tilt_delta,
+        }
+
     def start_stream(self, camera_index=None):
         """Start a single MediaMTX instance for both cameras"""
         try:
@@ -354,69 +410,30 @@ class WebSocketServer:
             return None
 
     def stop_stream(self, camera_index=None):
-        """Stop the MediaMTX server"""
+        """Stop the MediaMTX server.
+
+        Note: ffmpeg subprocesses are owned by CameraManager via Picamera2's
+        FfmpegOutput, so they're cleaned up when the manager is stopped.
+        rpicam-vid is no longer spawned at all (paths are pure publishers)."""
         if self.videostream_process:
             print("Stopping MediaMTX server...")
             try:
-                # First kill any existing rpicam-vid and ffmpeg processes
-                # Use SIGTERM first for graceful shutdown
-                subprocess.run("pkill -TERM -f rpicam-vid", shell=True)
-                subprocess.run("pkill -TERM -f ffmpeg", shell=True)
-                
-                # Small delay to let processes terminate gracefully
-                time.sleep(1)
-                
-                # Now terminate MediaMTX
                 self.videostream_process.terminate()
-                
                 try:
-                    # Wait for MediaMTX to terminate
                     self.videostream_process.wait(timeout=3)
                 except subprocess.TimeoutExpired:
-                    print("MediaMTX server did not terminate gracefully, forcing stop...")
-                    # If processes are still running, force kill them
-                    subprocess.run("pkill -9 -f rpicam-vid", shell=True)
-                    subprocess.run("pkill -9 -f ffmpeg", shell=True)
+                    print("MediaMTX did not terminate gracefully, killing...")
                     self.videostream_process.kill()
                     self.videostream_process.wait()
-                
-                # Final check to ensure all processes are cleaned up
-                subprocess.run("pkill -0 -f rpicam-vid || true", shell=True)
-                subprocess.run("pkill -0 -f ffmpeg || true", shell=True)
-                
-                print("All stream processes stopped")
-                
+                print("MediaMTX stopped")
             except Exception as e:
-                print(f"Error stopping stream processes: {str(e)}")
-                # Force kill as last resort
+                print(f"Error stopping MediaMTX: {str(e)}")
                 try:
-                    subprocess.run("pkill -9 -f rpicam-vid", shell=True)
-                    subprocess.run("pkill -9 -f ffmpeg", shell=True)
                     self.videostream_process.kill()
-                except:
+                except Exception:
                     pass
             finally:
                 self.videostream_process = None
-                # Small delay before allowing new streams
-                time.sleep(1)
-
-    def set_camera(self, argument):
-        """Select which camera to modify settings for"""
-        print(f"Selecting camera: {argument}")
-        self.stop_stream()
-        mediamtx_dir = os.path.expanduser('./mediamtx')
-        config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
-        self.update_camera_value(config_path, argument)
-        self.videostream_process = self.start_stream()
-
-    def set_shutter(self, argument):
-        """Set shutter speed for both cameras"""
-        print(f"Streaming camera shutter set to: {argument}")
-        
-        # Update both camera configs
-        self.stop_stream()
-        self.update_shutter_value(f'./mediamtx/mediamtx.yml', argument)
-        self.videostream_process = self.start_stream()
 
     async def handler(self, websocket):
         """Handle incoming WebSocket messages."""
@@ -443,6 +460,69 @@ class WebSocketServer:
                 elif command == "stop_imu_stream":
                     self.stop_imu_broadcast()
                     await websocket.send("IMU streaming stopped")
+                elif command == "set_observer_location":
+                    if len(parts) != 4:
+                        await websocket.send("Error: set_observer_location requires lat lon alt_m")
+                        continue
+                    try:
+                        lat, lon, alt_m = float(parts[1]), float(parts[2]), float(parts[3])
+                        self.pointing.set_observer(lat, lon, alt_m)
+                        await self._send_pointing_state(websocket, message="observer set")
+                    except Exception as e:
+                        await websocket.send(f"Error: {e}")
+                elif command == "add_pointing_reference":
+                    if len(parts) != 5:
+                        await websocket.send("Error: add_pointing_reference requires name lat lon alt_m (name has no spaces)")
+                        continue
+                    if (self.current_pan_movement and self.current_pan_movement.is_alive()) or \
+                       (self.current_tilt_movement and self.current_tilt_movement.is_alive()):
+                        await websocket.send("Error: cannot add reference while motors are moving")
+                        continue
+                    try:
+                        name = parts[1]
+                        lat, lon, alt_m = float(parts[2]), float(parts[3]), float(parts[4])
+                        pan_now = self._pan_steps_now()
+                        tilt_now = self._tilt_steps_now()
+                        self.pointing.add_reference(name, lat, lon, alt_m, pan_now, tilt_now)
+                        await self._send_pointing_state(websocket, message=f"reference '{name}' captured at pan={pan_now}, tilt={tilt_now}")
+                    except Exception as e:
+                        await websocket.send(f"Error: {e}")
+                elif command == "remove_pointing_reference":
+                    if len(parts) != 2:
+                        await websocket.send("Error: remove_pointing_reference requires a name")
+                        continue
+                    removed = self.pointing.remove_reference(parts[1])
+                    msg = f"removed '{parts[1]}'" if removed else f"no reference named '{parts[1]}'"
+                    await self._send_pointing_state(websocket, ok=removed, message=msg)
+                elif command == "list_pointing_references":
+                    await self._send_pointing_state(websocket)
+                elif command == "compute_pointing_calibration":
+                    try:
+                        fit = self.pointing.compute()
+                        await self._send_pointing_state(
+                            websocket,
+                            message=(f"calibrated: pan={fit.pan_steps_per_deg:.2f} steps/deg, "
+                                     f"tilt={fit.tilt_steps_per_deg:.2f} steps/deg, "
+                                     f"rms={fit.rms_residual_deg:.3f} deg, n={fit.n_references}"),
+                        )
+                    except Exception as e:
+                        await self._send_pointing_state(websocket, ok=False, message=f"compute failed: {e}")
+                elif command == "goto_latlon":
+                    if len(parts) != 4:
+                        await websocket.send("Error: goto_latlon requires lat lon alt_m")
+                        continue
+                    try:
+                        lat, lon, alt_m = float(parts[1]), float(parts[2]), float(parts[3])
+                        result = await self._do_goto_latlon(lat, lon, alt_m)
+                        await websocket.send(json.dumps({'type': 'goto_result', 'ok': True, 'data': result}))
+                    except Exception as e:
+                        await websocket.send(json.dumps({'type': 'goto_result', 'ok': False, 'message': str(e)}))
+                elif command == "get_pointing_state":
+                    await self._send_pointing_state(websocket)
+                elif command == "home_pointing":
+                    self.motor_controller.driver.reset_step_counter()
+                    self.motor_controller_tilt.driver.reset_step_counter()
+                    await self._send_pointing_state(websocket, message="step counters zeroed")
                 elif command == "shutdown":
                     # Handle shutdown command (no parameters needed)
                     await websocket.send("Shutting down server...")
@@ -490,18 +570,34 @@ class WebSocketServer:
                         await websocket.send(f"Max speed set to: {max_speed_delay} seconds delay")
                     except ValueError as e:
                         await websocket.send(f"Error setting max speed: {str(e)}")
-                elif command in ['ev', 'gain', 'aperture']:
+                elif command in ['ev', 'gain', 'shuttercam', 'ae']:
+                    # ev <stops> <cam>       — AE compensation (enables AE)
+                    # gain <val> <cam>       — manual analogue gain (disables AE)
+                    # shuttercam <us> <cam>  — manual shutter for a single cam (disables AE)
+                    # ae <on|off> <cam>      — toggle auto-exposure
                     if len(parts) != 3:
                         await websocket.send(f"Error: {command} command requires value and camera number")
                         continue
-                    value = int(parts[1])
-                    camera = int(parts[2])
-                    if command == 'ev':
-                        self.set_exposure_value(camera, value)
-                    elif command == 'gain':
-                        self.set_gain_value(camera, value)
-                    elif command == 'aperture':
-                        self.set_aperture_value(camera, value)
+                    if self.camera_manager is None:
+                        await websocket.send(f"Error: {command} unavailable (no CameraManager)")
+                        continue
+                    try:
+                        camera = int(parts[2])
+                        if command == 'ev':
+                            self.camera_manager.set_ae_compensation(camera, float(parts[1]))
+                            await websocket.send(f"ev set to {parts[1]} on cam{camera}")
+                        elif command == 'gain':
+                            self.camera_manager.set_exposure(camera, gain=float(parts[1]))
+                            await websocket.send(f"gain set to {parts[1]} on cam{camera}")
+                        elif command == 'shuttercam':
+                            self.camera_manager.set_exposure(camera, shutter_us=int(parts[1]))
+                            await websocket.send(f"shutter set to {parts[1]}us on cam{camera}")
+                        elif command == 'ae':
+                            on = parts[1].lower() in ('on', 'true', '1', 'yes')
+                            self.camera_manager.set_exposure(camera, ae_enable=on)
+                            await websocket.send(f"AE {'on' if on else 'off'} on cam{camera}")
+                    except Exception as e:
+                        await websocket.send(f"Error: {command} failed: {e!r}")
                 elif command == "move":
                     # Handle move command (requires 2 parameters)
                     if len(parts) != 3:
@@ -530,11 +626,16 @@ class WebSocketServer:
                     elif command == "capture":
                         self.trigger_camera(argument)
                     elif command == "shutter":
-                        await self.motor_controller.set_shutter_speed(argument)
-                    elif command == "exposeoutdoor":
-                        await self.motor_controller.set_exposure_outdoor(argument)
-                    elif command == "exposeinside":
-                        await self.motor_controller.set_exposure_inside(argument)
+                        # shutter <us>  — applies to BOTH cameras for backwards compat
+                        if self.camera_manager is None:
+                            await websocket.send("Error: shutter unavailable (no CameraManager)")
+                        else:
+                            try:
+                                for cam in (0, 1):
+                                    self.camera_manager.set_exposure(cam, shutter_us=argument)
+                                await websocket.send(f"shutter set to {argument}us on cam0 and cam1")
+                            except Exception as e:
+                                await websocket.send(f"Error: shutter failed: {e!r}")
                     elif command == "move":  # New combined command
                         if len(parts) != 3:
                             await websocket.send("Error: move command requires pan and tilt values")
@@ -657,227 +758,39 @@ class WebSocketServer:
         asyncio.run(start())
     
     def trigger_camera(self, idx):
-        # Stop the video stream before taking a photo
-        self.stop_stream()
-        
-        # Take the photo
-        self.capture_process = self.capture_photo(idx)
-        self.capture_process.wait()
-        
-        # Create symlink to the new photo
-        os.symlink(os.path.basename(self.last_photo_path), self.last_symlink_path)
+        """Capture a still while the stream keeps running (no MediaMTX restart)."""
+        if self.camera_manager is None:
+            print("trigger_camera: no CameraManager — capture unavailable")
+            return
 
-        print("Photo saved to disk, process completed")
-        
-        # Restart the video stream
-        self.videostream_process = self.start_stream()
-        print("Video stream restarted")
-    
-    def update_shutter_value(self, yml_file_path, new_shutter_value):
-        # Load the YAML file
-        with open(yml_file_path, 'r') as file:
-            data = yaml.safe_load(file)
-
-        # Update the `--shutter` value while preserving other settings
-        for path_key, path_value in data.get('paths', {}).items():
-            if isinstance(path_value, dict) and 'runOnInit' in path_value:
-                command = path_value['runOnInit']
-                updated_command = re.sub(r'--shutter\s+\d+', f'--shutter {new_shutter_value}', command)
-                path_value['runOnInit'] = updated_command
-
-        # Ensure WebRTC global settings are preserved
-        data['webrtc'] = True
-        data['webrtcAddress'] = ':8889'
-
-        # Write the updated YAML back to the file
-        with open(yml_file_path, 'w') as file:
-            yaml.dump(data, file, default_flow_style=False)
-    
-    def update_camera_value(self, yml_file_path, new_camera_value):
-        # Load the YAML file
-        with open(yml_file_path, 'r') as file:
-            data = yaml.safe_load(file)
-
-        # Update the `--camera` value while preserving other settings
-        for path_key, path_value in data.get('paths', {}).items():
-            if isinstance(path_value, dict) and 'runOnInit' in path_value:
-                command = path_value['runOnInit']
-                updated_command = re.sub(r'--camera\s+\d+', f'--camera {new_camera_value}', command)
-                path_value['runOnInit'] = updated_command
-
-        # Ensure WebRTC global settings are preserved
-        data['webrtc'] = True
-        data['webrtcAddress'] = ':8889'
-
-        # Write the updated YAML back to the file
-        with open(yml_file_path, 'w') as file:
-            yaml.dump(data, file, default_flow_style=False)    
-
-    def capture_photo(self, cam):
-        symlink_path = f'./captures/cam{cam}_last.jpg'
-
-        #Remove the previous symlink if it exists
-        if os.path.islink(symlink_path):
-             os.remove(symlink_path)
-
-        # Capture new photo with timestamp
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f'cam{cam}_{timestamp}.jpg'
+        file_name = f'cam{idx}_{timestamp}.jpg'
         file_path = f'./captures/{file_name}'
-        photo_command = f'rpicam-still -o {file_path} --immediate --nopreview --camera {cam}'
-        
+        symlink_path = f'./captures/cam{idx}_last.jpg'
+
+        try:
+            self.camera_manager.capture_still(idx, file_path)
+        except Exception as e:
+            print(f"trigger_camera({idx}): capture failed: {e!r}")
+            return
+
         self.last_photo_path = file_path
         self.last_symlink_path = symlink_path
 
-        # Execute the command and wait for it to complete
-        return subprocess.Popen(photo_command, shell=True)
-
-    def create_symlink(self, file_path):
-        #if os.path.islink(self.SYMLINK_PATH):
-        #    os.unlink(self.SYMLINK_PATH)
-        os.symlink(self.SYMLINK_PATH+file_path, self.SYMLINK_PATH+'cam0_last.jpg')
+        if os.path.islink(symlink_path):
+            os.remove(symlink_path)
+        os.symlink(os.path.basename(file_path), symlink_path)
+        print(f"Photo saved to {file_path}")
     
-    def set_shutter_single(self, camera_index, shutter_value):
-        """Set shutter speed for a specific camera"""
-        print(f"Setting camera {camera_index} shutter to: {shutter_value}")
-        try:
-            # Stop all streams first
-            self.stop_stream()
-            
-            # Update the configuration
-            mediamtx_dir = os.path.expanduser('./mediamtx')
-            config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
-            
-            # Load existing config
-            with open(config_path, 'r') as file:
-                data = yaml.safe_load(file)
-            
-            # Update only the specific camera's shutter value
-            camera_path = f'cam{camera_index}'
-            if camera_path in data['paths']:
-                command = data['paths'][camera_path]['runOnInit']
-                updated_command = re.sub(r'--shutter\s+\d+', f'--shutter {shutter_value}', command)
-                data['paths'][camera_path]['runOnInit'] = updated_command
-                
-                # Write the updated config
-                with open(config_path, 'w') as file:
-                    yaml.dump(data, file, default_flow_style=False)
-            
-            # Restart the stream
-            print(f"Restarting MediaMTX server...")
-            self.videostream_process = self.start_stream()
-            print("MediaMTX server restarted")
-            
-        except Exception as e:
-            print(f"Error setting shutter for camera {camera_index}: {str(e)}")
-            # Try to restart the stream even if there was an error
-            try:
-                self.videostream_process = self.start_stream()
-            except:
-                pass
-
-    def set_shutter_both(self, shutter_value):
-        """Set shutter speed for both cameras (legacy support)"""
-        print(f"Setting both cameras shutter to: {shutter_value}")
-        self.set_shutter_single(0, shutter_value)
-        self.set_shutter_single(1, shutter_value)
 
     def handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully"""
         print("\nShutdown signal received, cleaning up...")
+        if self.camera_manager is not None:
+            try:
+                self.camera_manager.stop_all()
+            except Exception as e:
+                print(f"Error stopping CameraManager: {e!r}")
         self.stop_stream()
         sys.exit(0)
-
-    def set_exposure_value(self, camera_index, ev_value):
-        """Set exposure value for a specific camera"""
-        print(f"Setting camera {camera_index} EV to: {ev_value}")
-        try:
-            self.stop_stream()
-            mediamtx_dir = os.path.expanduser('./mediamtx')
-            config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
-            
-            with open(config_path, 'r') as file:
-                data = yaml.safe_load(file)
-            
-            camera_path = f'cam{camera_index}'
-            if camera_path in data['paths']:
-                command = data['paths'][camera_path]['runOnInit']
-                # Add EV control to the command
-                updated_command = command.replace('rpicam-vid', f'rpicam-vid --ev {ev_value}')
-                data['paths'][camera_path]['runOnInit'] = updated_command
-                
-                with open(config_path, 'w') as file:
-                    yaml.dump(data, file, default_flow_style=False)
-            
-            self.videostream_process = self.start_stream()
-            print(f"Camera {camera_index} EV updated to {ev_value}")
-            
-        except Exception as e:
-            print(f"Error setting EV for camera {camera_index}: {str(e)}")
-            try:
-                self.videostream_process = self.start_stream()
-            except:
-                pass
-
-    def set_gain_value(self, camera_index, gain_value):
-        """Set gain value for a specific camera"""
-        print(f"Setting camera {camera_index} gain to: {gain_value}")
-        try:
-            self.stop_stream()
-            mediamtx_dir = os.path.expanduser('./mediamtx')
-            config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
-            
-            with open(config_path, 'r') as file:
-                data = yaml.safe_load(file)
-            
-            camera_path = f'cam{camera_index}'
-            if camera_path in data['paths']:
-                command = data['paths'][camera_path]['runOnInit']
-                # Add gain control to the command
-                updated_command = command.replace('rpicam-vid', f'rpicam-vid --gain {gain_value}')
-                data['paths'][camera_path]['runOnInit'] = updated_command
-                
-                with open(config_path, 'w') as file:
-                    yaml.dump(data, file, default_flow_style=False)
-            
-            self.videostream_process = self.start_stream()
-            print(f"Camera {camera_index} gain updated to {gain_value}")
-            
-        except Exception as e:
-            print(f"Error setting gain for camera {camera_index}: {str(e)}")
-            try:
-                self.videostream_process = self.start_stream()
-            except:
-                pass
-
-    def set_aperture_value(self, camera_index, aperture_value):
-        """Set aperture value for a specific camera"""
-        print(f"Setting camera {camera_index} aperture to: f/{aperture_value}")
-        try:
-            self.stop_stream()
-            mediamtx_dir = os.path.expanduser('./mediamtx')
-            config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
-            
-            with open(config_path, 'r') as file:
-                data = yaml.safe_load(file)
-            
-            camera_path = f'cam{camera_index}'
-            if camera_path in data['paths']:
-                command = data['paths'][camera_path]['runOnInit']
-                # Add aperture control to the command
-                updated_command = command.replace('rpicam-vid', f'rpicam-vid --aperture {aperture_value}')
-                data['paths'][camera_path]['runOnInit'] = updated_command
-                
-                with open(config_path, 'w') as file:
-                    yaml.dump(data, file, default_flow_style=False)
-            
-            self.videostream_process = self.start_stream()
-            print(f"Camera {camera_index} aperture updated to f/{aperture_value}")
-            
-        except Exception as e:
-            print(f"Error setting aperture for camera {camera_index}: {str(e)}")
-            try:
-                self.videostream_process = self.start_stream()
-            except:
-                pass
 
