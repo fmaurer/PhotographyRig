@@ -29,6 +29,26 @@ except ImportError:
     IMU_AVAILABLE = False
 
 from pointing_calibration import PointingCalibration, earth_to_azel
+from homography_calibration import HomographyCalibration
+
+
+# Camera index mapping for homography. In this rig the cam1 iframe is the
+# wide context view (where the red-zoom-indicator overlay lives in index.html)
+# and cam0 is the zoom / capture view. Flip these two if the UI iframes get
+# rewired.
+WIDE_CAM = 1
+ZOOM_CAM = 0
+
+
+# Commands that the UI polls at high frequency (~1 Hz) and that don't carry
+# meaningful per-call information — suppress their "Received message: ..."
+# log line to keep the server stdout readable. Add others here if more
+# polling endpoints are introduced.
+_QUIET_LOG_COMMANDS = frozenset({
+    "get_pointing_state",
+    "get_imu",
+    "get_homography",
+})
 
 class WebSocketServer:
     def __init__(self, motor_controller, motor_controller2, camera_manager=None):
@@ -76,6 +96,15 @@ class WebSocketServer:
             print(f"Pointing calibration loaded: pan_k={self.pointing.fit.pan_steps_per_deg:.2f} "
                   f"steps/deg, tilt_k={self.pointing.fit.tilt_steps_per_deg:.2f} steps/deg, "
                   f"rms={self.pointing.fit.rms_residual_deg:.3f} deg")
+
+        # Homography calibration: wide<->zoom red-box overlay.
+        homography_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                       'homography_calibration.json')
+        self.homography = HomographyCalibration(homography_path)
+        if self.homography.fit:
+            f = self.homography.fit
+            print(f"Homography calibration loaded: inliers={f.inliers}, rms={f.rms_px:.2f}px, "
+                  f"detector={f.detector}, computed_at={f.computed_at}")
         
         # Remove redundant file server - main.py already handles this
         # self.file_server = self.start_file_server()
@@ -383,6 +412,169 @@ class WebSocketServer:
         payload['data'] = self._pointing_state_dict()
         await websocket.send(json.dumps(payload))
 
+    async def _send_homography_state(self, websocket, ok=True, message=None, debug_url=None):
+        payload = {'type': 'homography_state', 'ok': ok}
+        if message is not None:
+            payload['message'] = message
+        if debug_url is not None:
+            payload['debug_url'] = debug_url
+        payload['data'] = self.homography.state_dict()
+        await websocket.send(json.dumps(payload))
+
+    async def _broadcast_homography_state(self, message=None, debug_url=None):
+        """Push the current fit to every connected client (used after a successful calibration)."""
+        if not self.connected_clients:
+            return
+        payload = {'type': 'homography_state', 'ok': True, 'data': self.homography.state_dict()}
+        if message is not None:
+            payload['message'] = message
+        if debug_url is not None:
+            payload['debug_url'] = debug_url
+        text = json.dumps(payload)
+        disconnected = set()
+        for client in self.connected_clients:
+            try:
+                await client.send(text)
+            except websockets.exceptions.ConnectionClosed:
+                disconnected.add(client)
+        self.connected_clients -= disconnected
+
+    def _auto_wide_crop_from_cache(self, margin: float = 1.0):
+        """Derive a sensible wide_crop from the cached fit's bounding box.
+
+        Expands the previous bounding box by `margin` × on each side (so margin=1.0
+        means the crop is 3× the previous bbox in each dimension), then clamps to
+        the wide image bounds. Returns None if no cache is available.
+        """
+        fit = self.homography.fit
+        if fit is None or not fit.corners_wide_px or not fit.wide_size:
+            return None
+        xs = [c[0] for c in fit.corners_wide_px]
+        ys = [c[1] for c in fit.corners_wide_px]
+        x_lo, x_hi = min(xs), max(xs)
+        y_lo, y_hi = min(ys), max(ys)
+        w = max(1.0, x_hi - x_lo)
+        h = max(1.0, y_hi - y_lo)
+        mx, my = w * margin, h * margin
+        cx = int(round(x_lo - mx))
+        cy = int(round(y_lo - my))
+        cw = int(round(w + 2 * mx))
+        ch = int(round(h + 2 * my))
+        full_w, full_h = int(fit.wide_size[0]), int(fit.wide_size[1])
+        # Clamp.
+        cx = max(0, min(full_w - 1, cx))
+        cy = max(0, min(full_h - 1, cy))
+        cw = max(1, min(full_w - cx, cw))
+        ch = max(1, min(full_h - cy, ch))
+        return (cx, cy, cw, ch)
+
+    async def _do_compute_homography_pairs(self, wide_pts, zoom_pts):
+        """Fit H from user-supplied manual point pairs.
+
+        Captures a single zoom + wide frame just to get their actual dims (the
+        UI sends coords in 1280x720 sensor space; we sanity-check that matches
+        what the cameras are streaming and persist the right dims in the fit).
+        """
+        if self.camera_manager is None:
+            raise RuntimeError("camera manager unavailable")
+        with self.imu_lock:
+            imu_pose = dict(self.imu_data)
+        # Cheap sanity grab so we know real frame dims (and they get persisted).
+        frame_wide, frame_zoom = await asyncio.gather(
+            asyncio.to_thread(self.camera_manager.capture_array, WIDE_CAM, color="gray"),
+            asyncio.to_thread(self.camera_manager.capture_array, ZOOM_CAM, color="gray"),
+        )
+        full_wide_size = [int(frame_wide.shape[1]), int(frame_wide.shape[0])]
+        full_zoom_size = [int(frame_zoom.shape[1]), int(frame_zoom.shape[0])]
+
+        debug_abs, debug_url = self._new_homography_debug_dir()
+        try:
+            fit = await asyncio.to_thread(
+                lambda: self.homography.compute_from_pairs(
+                    wide_pts, zoom_pts,
+                    full_zoom_size=full_zoom_size,
+                    full_wide_size=full_wide_size,
+                    imu_pose=imu_pose,
+                    debug_dir=debug_abs,
+                )
+            )
+        except Exception as e:
+            try:
+                e.debug_url = debug_url
+            except (AttributeError, TypeError):
+                pass
+            raise
+        await asyncio.to_thread(self.homography.save)
+        return fit, debug_url
+
+    def _new_homography_debug_dir(self):
+        """Generate a filesystem-safe, timestamped directory under homography_debug/.
+
+        Returns (abs_path, url_path) — both relative to the project root, so url_path
+        is ready to drop into an <a href> served by the HTTP server on port 8000.
+        """
+        ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        rel = os.path.join("homography_debug", ts)
+        abs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), rel)
+        # Use forward slashes for the URL regardless of OS.
+        url = "/" + rel.replace(os.sep, "/") + "/"
+        return abs_path, url
+
+    async def _do_calibrate_homography(self, wide_crop=None, use_cache_crop=True,
+                                       method="features", zoom_extra_scale=1.0):
+        """Grab one frame from each camera, fit H, persist, return (fit, debug_url).
+
+        - wide_crop: explicit (x, y, w, h) in full-wide pixels, or None.
+        - use_cache_crop: if True and wide_crop is None, derive a crop from the
+          cached fit's bounding box (expanded). If False, fit the full wide frame.
+        - method: "features" (AKAZE/SIFT + RANSAC) or "ecc" (direct intensity
+          alignment via cv2.findTransformECC).
+        - zoom_extra_scale: multiplier on the auto-derived zoom downsample
+          factor. <1 means more aggressive downsample (use when the real zoom
+          FOV is much narrower than the wide_crop's pixel-extent suggests).
+
+        Always writes debug artifacts to the returned debug_url — even on failure.
+        """
+        if self.camera_manager is None:
+            raise RuntimeError("camera manager unavailable")
+        if (self.current_pan_movement and self.current_pan_movement.is_alive()) or \
+           (self.current_tilt_movement and self.current_tilt_movement.is_alive()):
+            raise RuntimeError("cannot calibrate while motors are moving")
+
+        if wide_crop is None and use_cache_crop:
+            wide_crop = self._auto_wide_crop_from_cache()
+
+        with self.imu_lock:
+            imu_pose = dict(self.imu_data)
+
+        # Each _CameraStream has its own lock, so these run truly in parallel.
+        frame_wide, frame_zoom = await asyncio.gather(
+            asyncio.to_thread(self.camera_manager.capture_array, WIDE_CAM, color="gray"),
+            asyncio.to_thread(self.camera_manager.capture_array, ZOOM_CAM, color="gray"),
+        )
+
+        debug_abs, debug_url = self._new_homography_debug_dir()
+        try:
+            fit = await asyncio.to_thread(
+                lambda: self.homography.compute(
+                    frame_wide, frame_zoom, imu_pose,
+                    wide_crop=wide_crop, method=method,
+                    zoom_extra_scale=zoom_extra_scale,
+                    debug_dir=debug_abs,
+                )
+            )
+        except Exception as e:
+            # Tag the exception so the caller can include the debug URL in its
+            # error message. We don't want to mask the original error.
+            try:
+                e.debug_url = debug_url
+            except (AttributeError, TypeError):
+                pass
+            raise
+        # Persist off the event loop — small write but uses fsync via os.replace.
+        await asyncio.to_thread(self.homography.save)
+        return fit, debug_url
+
     async def _do_goto_latlon(self, lat, lon, alt_m):
         pan_target, tilt_target, az, el = self.pointing.latlon_to_steps(lat, lon, alt_m)
         pan_now = self._pan_steps_now()
@@ -440,10 +632,22 @@ class WebSocketServer:
         # Add client to tracking set
         self.connected_clients.add(websocket)
         print(f"Client connected. Total clients: {len(self.connected_clients)}")
-        
+
+        # Push any cached homography fit so the red-box overlay appears immediately.
+        if self.homography.fit is not None:
+            try:
+                await self._send_homography_state(websocket, message="cached fit")
+            except Exception as e:
+                print(f"Failed to push cached homography on connect: {e}")
+
         try:
             async for message in websocket:
-                print(f"Received message: {message}")
+                # Suppress logging for high-frequency polling commands so the
+                # server stdout stays readable. These fire every ~1 s from the
+                # UI's setInterval and don't carry useful information per-call.
+                _command_word = message.split(None, 1)[0] if message else ""
+                if _command_word not in _QUIET_LOG_COMMANDS:
+                    print(f"Received message: {message}")
                 parts = message.split()
                 if len(parts) < 1:
                     await websocket.send("Error: Empty message")
@@ -507,6 +711,117 @@ class WebSocketServer:
                         )
                     except Exception as e:
                         await self._send_pointing_state(websocket, ok=False, message=f"compute failed: {e}")
+                elif command in ("calibrate_homography", "calibrate_homography_ecc"):
+                    # Forms accepted (same for both, only the fit method differs):
+                    #   <cmd>                 -> auto crop from cache if any, else full
+                    #   <cmd> full            -> force full wide image (no crop)
+                    #   <cmd> cx cy w h       -> explicit crop in full-wide pixels
+                    # Any of the above may also include `zoom=N.NN` to override
+                    # the zoom-downsample multiplier (default 1.0).
+                    method = "ecc" if command == "calibrate_homography_ecc" else "features"
+                    wide_crop = None
+                    use_cache_crop = True
+                    zoom_extra_scale = 1.0
+
+                    # Strip any key=value tokens out first.
+                    positional = []
+                    kv_error = None
+                    for tok in parts[1:]:
+                        if "=" in tok:
+                            k, v = tok.split("=", 1)
+                            if k == "zoom":
+                                try:
+                                    zoom_extra_scale = float(v)
+                                except ValueError:
+                                    kv_error = f"Error: {command} 'zoom=' value must be a float"
+                                    break
+                            else:
+                                kv_error = f"Error: {command} unknown key '{k}' (expected 'zoom=')"
+                                break
+                        else:
+                            positional.append(tok)
+                    if kv_error:
+                        await websocket.send(kv_error)
+                        continue
+
+                    if len(positional) == 1 and positional[0].lower() == "full":
+                        use_cache_crop = False
+                    elif len(positional) == 4:
+                        try:
+                            wide_crop = (int(positional[0]), int(positional[1]),
+                                         int(positional[2]), int(positional[3]))
+                        except ValueError:
+                            await websocket.send(f"Error: {command} crop args must be ints: cx cy w h")
+                            continue
+                    elif len(positional) != 0:
+                        await websocket.send(f"Error: {command} positional args: 0, 'full', or 'cx cy w h' (+ optional zoom=N.NN)")
+                        continue
+                    try:
+                        fit, debug_url = await self._do_calibrate_homography(
+                            wide_crop=wide_crop, use_cache_crop=use_cache_crop, method=method,
+                            zoom_extra_scale=zoom_extra_scale,
+                        )
+                        crop_note = f", crop={fit.wide_crop}" if fit.wide_crop else ""
+                        if fit.method == "ecc":
+                            confidence_note = f"cc={fit.ecc_cc:.3f}" if fit.ecc_cc is not None else "cc=?"
+                        else:
+                            confidence_note = (f"inliers={fit.inliers}, rms={fit.rms_px:.2f}px, "
+                                               f"n={fit.n_matches}")
+                        msg = f"calibrated ({fit.detector}): {confidence_note}{crop_note}"
+                        # Broadcast so every browser tab updates its overlay.
+                        await self._broadcast_homography_state(message=msg, debug_url=debug_url)
+                    except Exception as e:
+                        debug_url = getattr(e, "debug_url", None)
+                        await self._send_homography_state(
+                            websocket, ok=False,
+                            message=f"calibration failed ({method}): {e}",
+                            debug_url=debug_url,
+                        )
+                elif command == "compute_homography_pairs":
+                    # Form: compute_homography_pairs N wx1 wy1 zx1 zy1 wx2 wy2 zx2 zy2 ...
+                    # Coords are in full-wide / full-zoom sensor space (pixels).
+                    if len(parts) < 2:
+                        await websocket.send("Error: compute_homography_pairs requires N then 4N coords")
+                        continue
+                    try:
+                        n = int(parts[1])
+                    except ValueError:
+                        await websocket.send("Error: compute_homography_pairs first arg must be int N")
+                        continue
+                    if n < 4:
+                        await websocket.send(f"Error: need at least 4 pairs, got {n}")
+                        continue
+                    expected = 2 + 4 * n
+                    if len(parts) != expected:
+                        await websocket.send(
+                            f"Error: compute_homography_pairs expected {expected} tokens, got {len(parts)}"
+                        )
+                        continue
+                    try:
+                        wide_pts = []
+                        zoom_pts = []
+                        idx = 2
+                        for _ in range(n):
+                            wide_pts.append([float(parts[idx]), float(parts[idx + 1])])
+                            zoom_pts.append([float(parts[idx + 2]), float(parts[idx + 3])])
+                            idx += 4
+                    except ValueError as e:
+                        await websocket.send(f"Error parsing pair coords: {e}")
+                        continue
+                    try:
+                        fit, debug_url = await self._do_compute_homography_pairs(wide_pts, zoom_pts)
+                        msg = (f"calibrated (manual_pairs): inliers={fit.inliers}/{fit.n_matches}, "
+                               f"rms={fit.rms_px:.2f}px")
+                        await self._broadcast_homography_state(message=msg, debug_url=debug_url)
+                    except Exception as e:
+                        debug_url = getattr(e, "debug_url", None)
+                        await self._send_homography_state(
+                            websocket, ok=False,
+                            message=f"pairs calibration failed: {e}",
+                            debug_url=debug_url,
+                        )
+                elif command == "get_homography":
+                    await self._send_homography_state(websocket)
                 elif command == "goto_latlon":
                     if len(parts) != 4:
                         await websocket.send("Error: goto_latlon requires lat lon alt_m")

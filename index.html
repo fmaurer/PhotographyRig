@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="UTF-8">
     <title>Star and Moon Photography</title>
     <style>
         body {
@@ -213,39 +214,107 @@
         </div>
 
         <div id="stream-container">
-            <iframe src="http://frodo.local:8889/cam1/"></iframe>
-            <!-- Add transparent overlay for click detection -->
-            <div id="cam1-overlay" style="
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 365px;
-                height: 206px;
-                background: transparent;
-                cursor: crosshair;
-                z-index: 10;
-                display: none;
-            "></div>
-            <div id="red-zoom-indicator" style="
-                position: absolute;
-                border: 1px solid red;
-                width: 9px;
-                height: 6px;
-                top: 88px;
-                left: 180px;
-            "></div>
-            <div id="green-center-indicator" style="
-                position: absolute;
-                border: 1px solid rgb(0, 135, 29);
-                width: 9px;
-                height: 6px;
-                top: 100px;
-                left: 178px;
-            "></div>
+            <!-- Wide-view (cam1) iframe + overlays + decorations. The transform
+                 is applied to a SINGLE inner container (#cam1-content), not to
+                 each child individually — that way every child shares the same
+                 scale origin (the wrap's center) and the red rectangle, iframe,
+                 and overlay all stay aligned at any magnification.
+                 overflow:hidden on the wrap clips the magnified content back
+                 to the original 365x206 screen footprint. -->
+            <div id="cam1-wrap" style="display: inline-block; vertical-align: top;
+                                       width: 365px; height: 206px;
+                                       overflow: hidden; position: relative;">
+                <div id="cam1-content" style="position: absolute; top: 0; left: 0;
+                                              width: 100%; height: 100%;
+                                              transform-origin: center center;">
+                    <iframe src="http://frodo.local:8889/cam1/"
+                            style="display: block; width: 100%; height: 100%; border: 0;"></iframe>
+                    <div id="cam1-overlay" style="
+                        position: absolute;
+                        top: 0;
+                        left: 0;
+                        width: 100%;
+                        height: 100%;
+                        background: transparent;
+                        cursor: crosshair;
+                        z-index: 10;
+                        display: none;
+                    "></div>
+                    <!-- Axis-aligned bounding rect of the homography quad — primary
+                         visual indicator of where the zoom is aimed in the wide view.
+                         Initial position matches the legacy hardcoded marker so
+                         click-to-move keeps the same baseline pre-calibration. -->
+                    <div id="red-zoom-indicator" style="
+                        position: absolute;
+                        border: 1px solid red;
+                        box-sizing: border-box;
+                        top: 88px;
+                        left: 180px;
+                        width: 9px;
+                        height: 6px;
+                        pointer-events: none;
+                        z-index: 9;
+                    "></div>
+                    <!-- True quad from the 4 projected zoom corners. Polygon kept
+                         hidden — bounding rect is the user-facing indicator (the
+                         polygon would self-intersect for poor fits). -->
+                    <svg id="zoom-quad-overlay" viewBox="0 0 1280 720" preserveAspectRatio="none"
+                         style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                                pointer-events: none; z-index: 9;">
+                        <polygon id="zoom-quad" points="" stroke="red" stroke-width="6"
+                                 fill="none" vector-effect="non-scaling-stroke"
+                                 style="display: none;"></polygon>
+                    </svg>
+                    <!-- Crosshair marking the exact center of the cam1 view.
+                         Two thin perpendicular lines positioned via 50% + translate
+                         so the cross hits the true center regardless of pixel grid;
+                         17px arms (8 each side + 1 center pixel) so the lines
+                         cross at a clean center pixel. -->
+                    <div id="green-center-indicator" style="
+                        position: absolute;
+                        top: 50%;
+                        left: 50%;
+                        width: 0;
+                        height: 0;
+                        pointer-events: none;
+                        z-index: 9;
+                    ">
+                        <div style="position: absolute; left: 0; top: 0;
+                                    width: 17px; height: 1px;
+                                    background: rgb(0, 135, 29);
+                                    transform: translate(-50%, -50%);"></div>
+                        <div style="position: absolute; left: 0; top: 0;
+                                    width: 1px; height: 17px;
+                                    background: rgb(0, 135, 29);
+                                    transform: translate(-50%, -50%);"></div>
+                    </div>
+                </div>
+            </div>
             <div id="last-capture-container">
                 <img id="last-capture" src="http://frodo.local:8000/captures/cam0_last.jpg">
             </div>
-            <iframe src="http://frodo.local:8889/cam0/"></iframe>
+            <!-- Zoom-view (cam0) iframe + click overlay wrapped together for the
+                 same reason as cam1-wrap above. -->
+            <div id="cam0-wrap" style="display: inline-block; vertical-align: top;
+                                       width: 365px; height: 206px;
+                                       overflow: hidden; position: relative;
+                                       border: 4px solid #b80000; box-sizing: content-box;">
+                <iframe src="http://frodo.local:8889/cam0/"
+                        style="display: block; width: 100%; height: 100%; border: 0;
+                               transform-origin: center center;"></iframe>
+                <div id="cam0-overlay" style="
+                    position: absolute;
+                    top: 0;
+                    left: 0;
+                    width: 100%;
+                    height: 100%;
+                    background: transparent;
+                    cursor: crosshair;
+                    z-index: 10;
+                    display: none;
+                    transform-origin: center center;
+                "></div>
+            </div>
         </div>
 
         <!-- Camera Controls -->
@@ -505,6 +574,64 @@
                 <h3 style="margin: 0 0 6px 0; color: #9C27B0; font-size: 14px;">Calibration</h3>
                 <button onclick="computePointingCalibration()" style="background-color: #9C27B0; color: white; padding: 5px 12px; border: none; cursor: pointer;">Compute</button>
                 <div id="cal-display" style="font-size: 12px; color: #ccc; margin-top: 6px; font-family: monospace;">Not calibrated</div>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #FF5252; font-size: 14px;">Homography (red-box overlay)</h3>
+                <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">Aim at a textured, distant scene and press Calibrate. Fits zoom → wide and updates the overlay quad.</div>
+                <div style="margin-bottom: 6px;">
+                    <button onclick="calibrateHomography()" style="background-color: #FF5252; color: white; padding: 5px 12px; border: none; cursor: pointer;">Calibrate</button>
+                    <button onclick="calibrateHomographyEcc()" title="Direct intensity alignment (cv2.findTransformECC) — works when sharpness/blur differs between zoom and wide-crop" style="background-color: #6a1b9a; color: white; padding: 5px 10px; border: none; cursor: pointer; margin-left: 4px;">Calibrate (ECC)</button>
+                    <button onclick="calibrateHomographyFull()" title="Skip cropping — fit using the entire wide frame" style="background-color: #555; color: white; padding: 5px 10px; border: none; cursor: pointer; margin-left: 4px;">Calibrate (full)</button>
+                    <span id="hom-badge" style="display:none; margin-left: 8px; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-family: monospace;"></span>
+                </div>
+                <div style="font-size: 11px; color: #aaa; margin-bottom: 4px;">
+                    Wide crop (pixels in full-wide frame). Leave blank for auto (uses last fit's region) or click "From cache".
+                </div>
+                <div style="margin-bottom: 6px;">
+                    <input id="hom-cx" type="number" step="1" placeholder="cx" style="width: 60px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <input id="hom-cy" type="number" step="1" placeholder="cy" style="width: 60px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <input id="hom-cw" type="number" step="1" placeholder="w" style="width: 60px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <input id="hom-ch" type="number" step="1" placeholder="h" style="width: 60px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <button onclick="homCropFromCache()" title="Fill the crop inputs from the cached fit's bounding box (expanded ×2)" style="background-color: #607D8B; color: white; padding: 5px 10px; border: none; cursor: pointer; margin-left: 4px;">From cache</button>
+                    <button onclick="homCropClear()" style="background-color: #555; color: white; padding: 5px 10px; border: none; cursor: pointer;">Clear</button>
+                </div>
+                <div style="margin-bottom: 6px;">
+                    <button id="crop-draw-btn" onclick="toggleCropDraw()" title="Click and drag on the wide-view stream to select a crop region" style="background-color: #00838f; color: white; padding: 5px 10px; border: none; cursor: pointer;">Draw crop on wide view</button>
+                    <span id="crop-draw-status" style="margin-left: 8px; font-size: 11px; color: #aaa;"></span>
+                </div>
+                <div style="margin-bottom: 6px;">
+                    <label style="font-size: 11px; color: #aaa;">Zoom scale ×</label>
+                    <input id="hom-zoom-scale" type="number" step="0.01" min="0.01" max="10" placeholder="1.0" title="Multiplier on the auto-derived zoom downsample. <1 = more aggressive downsample (use when the real zoom FOV is much narrower than the wide_crop's pixel-extent suggests)." style="width: 70px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <span style="font-size: 11px; color: #666; margin-left: 6px;">(blank = 1.0)</span>
+                </div>
+                <div id="hom-display" style="font-size: 12px; color: #ccc; margin-top: 6px; font-family: monospace;">Not calibrated</div>
+                <div id="hom-debug-link" style="font-size: 11px; color: #aaa; margin-top: 4px; font-family: monospace;"></div>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #ffd54f; font-size: 14px;">Manual point pairs</h3>
+                <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">
+                    Bulletproof fallback for when auto-alignment can't converge. Click <b>Start</b>, then click ≥4 matching points: first on the <b>wide view</b> (top iframe), then on the <b>zoom view</b> (bottom iframe). Each (wide, zoom) click pair adds one correspondence. After 4+ pairs, click <b>Compute</b>.
+                </div>
+                <div style="margin-bottom: 6px;">
+                    <button id="pairs-toggle-btn" onclick="togglePairsMode()" style="background-color: #ffd54f; color: black; padding: 5px 12px; border: none; cursor: pointer;">Start collection</button>
+                    <button onclick="undoLastPair()" style="background-color: #555; color: white; padding: 5px 10px; border: none; cursor: pointer; margin-left: 4px;">Undo last</button>
+                    <button onclick="clearPairs()" style="background-color: #555; color: white; padding: 5px 10px; border: none; cursor: pointer;">Clear</button>
+                    <button onclick="computeFromPairs()" style="background-color: #4caf50; color: white; padding: 5px 12px; border: none; cursor: pointer; margin-left: 4px;">Compute</button>
+                </div>
+                <div id="pairs-display" style="font-size: 12px; color: #ccc; font-family: monospace;">0 pairs — collection off</div>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #80d8ff; font-size: 14px;">Wide-view magnification</h3>
+                <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">
+                    Magnify the wide camera view to inspect detail or click precisely. Applies any time — picks a single setting that persists across all modes (calibrate, draw-crop, manual pairs).
+                </div>
+                <button id="mag-1" onclick="setMagnification(1)" title="No magnification" style="background-color: #ffd54f; color: black; padding: 3px 8px; border: none; cursor: pointer;">1&times;</button>
+                <button id="mag-2" onclick="setMagnification(2)" title="2x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">2&times;</button>
+                <button id="mag-3" onclick="setMagnification(3)" title="3x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">3&times;</button>
+                <button id="mag-4" onclick="setMagnification(4)" title="4x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">4&times;</button>
             </div>
 
             <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
@@ -1224,6 +1351,631 @@
             sendRawCommand('compute_pointing_calibration');
         }
 
+        // Last homography fit data, kept so "From cache" can re-derive the crop
+        // even if the server hasn't been queried since page load.
+        let lastHomographyData = null;
+
+        function _homFittingBadge() {
+            const badge = document.getElementById('hom-badge');
+            if (badge) {
+                badge.textContent = 'fitting…';
+                badge.style.background = '#555';
+                badge.style.color = 'white';
+                badge.style.display = 'inline-block';
+            }
+        }
+
+        // Build "<command> [crop args] [zoom=N.NN]" from the inputs. Returns
+        // null on a partial fill (an error has already been logged).
+        function _homBuildCommand(baseCmd, suffix) {
+            const ids = ['hom-cx', 'hom-cy', 'hom-cw', 'hom-ch'];
+            const vals = ids.map(id => document.getElementById(id).value.trim());
+            const filled = vals.filter(v => v !== '').length;
+
+            // Zoom-scale multiplier (optional).
+            const zoomRaw = document.getElementById('hom-zoom-scale').value.trim();
+            let zoomSuffix = '';
+            if (zoomRaw !== '') {
+                const z = parseFloat(zoomRaw);
+                if (!Number.isFinite(z) || z <= 0) {
+                    writeToConsole('homography: zoom scale must be a positive number');
+                    return null;
+                }
+                zoomSuffix = ` zoom=${z}`;
+            }
+
+            if (suffix === 'full') return `${baseCmd} full${zoomSuffix}`;
+            if (filled === 0) return `${baseCmd}${zoomSuffix}`.trim();
+            if (filled !== 4) {
+                writeToConsole('homography: fill all 4 crop fields (cx cy w h) or leave them all blank');
+                return null;
+            }
+            const ints = vals.map(v => parseInt(v, 10));
+            if (ints.some(n => !Number.isFinite(n))) {
+                writeToConsole('homography: crop values must be integers');
+                return null;
+            }
+            return `${baseCmd} ${ints.join(' ')}${zoomSuffix}`;
+        }
+
+        function calibrateHomography() {
+            const cmd = _homBuildCommand('calibrate_homography');
+            if (!cmd) return;
+            sendRawCommand(cmd);
+            _homFittingBadge();
+        }
+
+        function calibrateHomographyEcc() {
+            const cmd = _homBuildCommand('calibrate_homography_ecc');
+            if (!cmd) return;
+            sendRawCommand(cmd);
+            _homFittingBadge();
+        }
+
+        function calibrateHomographyFull() {
+            const cmd = _homBuildCommand('calibrate_homography', 'full');
+            sendRawCommand(cmd);
+            _homFittingBadge();
+        }
+
+        function homCropFromCache() {
+            if (!lastHomographyData || !lastHomographyData.corners_wide_px || !lastHomographyData.wide_size) {
+                writeToConsole('homography: no cached fit yet — calibrate once with manual crop first');
+                return;
+            }
+            const xs = lastHomographyData.corners_wide_px.map(c => c[0]);
+            const ys = lastHomographyData.corners_wide_px.map(c => c[1]);
+            const xLo = Math.min(...xs), xHi = Math.max(...xs);
+            const yLo = Math.min(...ys), yHi = Math.max(...ys);
+            const w = Math.max(1, xHi - xLo);
+            const h = Math.max(1, yHi - yLo);
+            // Expand the bbox by 1× margin on each side -> 3× total in each dim.
+            const margin = 1.0;
+            const mx = w * margin, my = h * margin;
+            let cx = Math.round(xLo - mx);
+            let cy = Math.round(yLo - my);
+            let cw = Math.round(w + 2 * mx);
+            let ch = Math.round(h + 2 * my);
+            // Clamp to wide-frame bounds.
+            const [fullW, fullH] = lastHomographyData.wide_size;
+            cx = Math.max(0, Math.min(fullW - 1, cx));
+            cy = Math.max(0, Math.min(fullH - 1, cy));
+            cw = Math.max(1, Math.min(fullW - cx, cw));
+            ch = Math.max(1, Math.min(fullH - cy, ch));
+            document.getElementById('hom-cx').value = cx;
+            document.getElementById('hom-cy').value = cy;
+            document.getElementById('hom-cw').value = cw;
+            document.getElementById('hom-ch').value = ch;
+        }
+
+        function homCropClear() {
+            ['hom-cx', 'hom-cy', 'hom-cw', 'hom-ch'].forEach(id => {
+                document.getElementById(id).value = '';
+            });
+        }
+
+        // --- click-and-drag crop selection on the wide-view overlay -----------
+        // Reuses #cam1-overlay (the same transparent layer used by click-to-move).
+        // Mutually exclusive with click-to-move so the two modes don't fight.
+        let cropDrawEnabled = false;
+        let cropDrawing = null;  // { startX, startY, rectEl } during a drag
+
+        function _cropDrawBtnVisuals() {
+            const btn = document.getElementById('crop-draw-btn');
+            const status = document.getElementById('crop-draw-status');
+            if (!btn) return;
+            if (cropDrawEnabled) {
+                btn.textContent = 'Cancel draw';
+                btn.style.backgroundColor = '#f44336';
+                if (status) status.textContent = 'click & drag on the wide view';
+            } else {
+                btn.textContent = 'Draw crop on wide view';
+                btn.style.backgroundColor = '#00838f';
+                if (status) status.textContent = '';
+            }
+        }
+
+        function toggleCropDraw() {
+            // Mutual exclusion: if click-to-move is on, turn it off first.
+            if (!cropDrawEnabled && clickToMoveEnabled) {
+                toggleClickToMove();
+            }
+            cropDrawEnabled = !cropDrawEnabled;
+            const overlay = document.getElementById('cam1-overlay');
+            if (cropDrawEnabled) {
+                overlay.style.display = 'block';
+                overlay.addEventListener('pointerdown', cropDragStart);
+                overlay.addEventListener('pointermove', cropDragMove);
+                overlay.addEventListener('pointerup', cropDragEnd);
+                overlay.addEventListener('pointercancel', cropDragCancel);
+            } else {
+                overlay.removeEventListener('pointerdown', cropDragStart);
+                overlay.removeEventListener('pointermove', cropDragMove);
+                overlay.removeEventListener('pointerup', cropDragEnd);
+                overlay.removeEventListener('pointercancel', cropDragCancel);
+                // Only hide the overlay if click-to-move isn't using it.
+                if (!clickToMoveEnabled) overlay.style.display = 'none';
+                cropDrawing = null;
+                const rectEl = document.getElementById('crop-draw-rect');
+                if (rectEl) rectEl.style.display = 'none';
+            }
+            _cropDrawBtnVisuals();
+        }
+
+        function _cropDragGetRect(overlay, ev) {
+            // Pointer coords in overlay-local pixel space, clamped to overlay bounds.
+            const r = overlay.getBoundingClientRect();
+            return {
+                x: Math.max(0, Math.min(r.width, ev.clientX - r.left)),
+                y: Math.max(0, Math.min(r.height, ev.clientY - r.top)),
+                overlayRect: r,
+            };
+        }
+
+        function cropDragStart(ev) {
+            if (!cropDrawEnabled) return;
+            ev.preventDefault();
+            const overlay = ev.currentTarget;
+            if (overlay.setPointerCapture) overlay.setPointerCapture(ev.pointerId);
+            const { x, y } = _cropDragGetRect(overlay, ev);
+            let rectEl = document.getElementById('crop-draw-rect');
+            if (!rectEl) {
+                rectEl = document.createElement('div');
+                rectEl.id = 'crop-draw-rect';
+                rectEl.style.cssText =
+                    'position:absolute; border:2px solid #00e5ff; background:rgba(0,229,255,0.12); ' +
+                    'pointer-events:none; z-index:11; box-sizing:border-box;';
+                overlay.appendChild(rectEl);
+            }
+            rectEl.style.left = x + 'px';
+            rectEl.style.top = y + 'px';
+            rectEl.style.width = '0px';
+            rectEl.style.height = '0px';
+            rectEl.style.display = 'block';
+            cropDrawing = { startX: x, startY: y, rectEl };
+        }
+
+        function cropDragMove(ev) {
+            if (!cropDrawing) return;
+            const overlay = ev.currentTarget;
+            const { x, y } = _cropDragGetRect(overlay, ev);
+            const left = Math.min(x, cropDrawing.startX);
+            const top = Math.min(y, cropDrawing.startY);
+            const w = Math.abs(x - cropDrawing.startX);
+            const h = Math.abs(y - cropDrawing.startY);
+            cropDrawing.rectEl.style.left = left + 'px';
+            cropDrawing.rectEl.style.top = top + 'px';
+            cropDrawing.rectEl.style.width = w + 'px';
+            cropDrawing.rectEl.style.height = h + 'px';
+        }
+
+        function cropDragEnd(ev) {
+            if (!cropDrawing) return;
+            const overlay = ev.currentTarget;
+            if (overlay.releasePointerCapture) {
+                try { overlay.releasePointerCapture(ev.pointerId); } catch (_) {}
+            }
+            const { x, y, overlayRect } = _cropDragGetRect(overlay, ev);
+            const left = Math.min(x, cropDrawing.startX);
+            const top = Math.min(y, cropDrawing.startY);
+            const w = Math.abs(x - cropDrawing.startX);
+            const h = Math.abs(y - cropDrawing.startY);
+            cropDrawing = null;
+
+            if (w < 4 || h < 4) {
+                writeToConsole('crop draw: drag too small, ignored');
+                const rectEl = document.getElementById('crop-draw-rect');
+                if (rectEl) rectEl.style.display = 'none';
+                return;
+            }
+
+            // Scale browser-pixel coords to wide-frame sensor coords. Prefer the
+            // size reported by the latest fit; fall back to 1280×720 (the current
+            // stream config) if we haven't calibrated yet.
+            const wideSize = (lastHomographyData && lastHomographyData.wide_size) || [1280, 720];
+            const sx = wideSize[0] / overlayRect.width;
+            const sy = wideSize[1] / overlayRect.height;
+            const cx = Math.round(left * sx);
+            const cy = Math.round(top * sy);
+            const cw = Math.round(w * sx);
+            const ch = Math.round(h * sy);
+
+            document.getElementById('hom-cx').value = cx;
+            document.getElementById('hom-cy').value = cy;
+            document.getElementById('hom-cw').value = cw;
+            document.getElementById('hom-ch').value = ch;
+            writeToConsole(`crop set from drag: cx=${cx}, cy=${cy}, w=${cw}, h=${ch}`);
+
+            // Exit draw mode after a successful selection — Calibrate is next.
+            toggleCropDraw();
+        }
+
+        function cropDragCancel(ev) {
+            if (!cropDrawing) return;
+            cropDrawing.rectEl.style.display = 'none';
+            cropDrawing = null;
+        }
+
+        // --- manual point-pair collection ----------------------------------
+        // Click ≥4 matching points: first on the wide overlay, then on the
+        // zoom overlay. Each (wide, zoom) tuple becomes one correspondence.
+        // After 4+ pairs the user hits Compute and the server fits H directly.
+        let pairsMode = false;
+        let pairsState = 'wide';   // 'wide' = next click goes on wide; 'zoom' = next on zoom
+        let pendingWide = null;
+        const manualPairs = [];    // {wide:{x,y}, zoom:{x,y}}
+        const pairMarkers = [];    // DOM elements stacked in click order (2 per pair)
+        // Cameras stream at 1280x720; sensor coords scale linearly from the
+        // browser-rendered iframe size.
+        const SENSOR_W = 1280;
+        const SENSOR_H = 720;
+
+        function _pairsBtnVisuals() {
+            const btn = document.getElementById('pairs-toggle-btn');
+            if (!btn) return;
+            if (pairsMode) {
+                btn.textContent = 'Stop collection';
+                btn.style.backgroundColor = '#f44336';
+                btn.style.color = 'white';
+            } else {
+                btn.textContent = 'Start collection';
+                btn.style.backgroundColor = '#ffd54f';
+                btn.style.color = 'black';
+            }
+        }
+
+        function _updatePairsDisplay() {
+            const el = document.getElementById('pairs-display');
+            if (!el) return;
+            let txt = `${manualPairs.length} pairs`;
+            if (!pairsMode) {
+                txt += ' — collection off';
+            } else if (pendingWide) {
+                txt += ` — click on zoom for pair ${manualPairs.length + 1}`;
+            } else {
+                txt += ` — click on wide for pair ${manualPairs.length + 1}`;
+            }
+            el.textContent = txt;
+        }
+
+        // cam0-overlay is now a child of #cam0-wrap with 100%/100% sizing, so
+        // it's positioned automatically by its parent — no JS needed.
+
+        // Wide-view magnification: applied any time via the 1×/2×/3×/4× buttons,
+        // not just during pairs collection. All children of #cam1-wrap get the
+        // same scale transform so iframe content, click overlay, and the red
+        // bounding rectangle all stay aligned. overflow:hidden on cam1-wrap
+        // clips the magnified content to the original 365x206 footprint.
+        // Click→sensor math uses getBoundingClientRect, which returns the
+        // post-transform rect, so coords convert correctly at any magnification.
+        let magnification = 1;
+
+        function setMagnification(factor) {
+            magnification = factor;
+            _applyMagnification();
+            _updateMagButtons();
+        }
+
+        function _updateMagButtons() {
+            [1, 2, 3, 4].forEach(n => {
+                const btn = document.getElementById(`mag-${n}`);
+                if (!btn) return;
+                const active = n === magnification;
+                btn.style.backgroundColor = active ? '#ffd54f' : '#555';
+                btn.style.color = active ? 'black' : 'white';
+            });
+        }
+
+        function _applyMagnification() {
+            // Apply the scale to the single inner container — that way every
+            // child (iframe, click overlay, red rect, SVG, green dot) shares
+            // the same scale origin, so they stay correctly aligned at any
+            // magnification level (and the red rect doesn't drift as the
+            // magnification changes).
+            const content = document.getElementById('cam1-content');
+            if (!content) return;
+            content.style.transform = magnification > 1 ? `scale(${magnification})` : '';
+        }
+
+        // Hide the static red-box/green-dot/SVG quad decorations while collecting
+        // pairs — they're not useful for pair picking and just add visual clutter.
+        // (They still scale correctly with magnification thanks to being inside
+        // cam1-wrap, but pairs mode is a clean-slate workflow.)
+        function _setDecorationsVisible(visible) {
+            ['red-zoom-indicator', 'zoom-quad-overlay', 'green-center-indicator'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.visibility = visible ? '' : 'hidden';
+            });
+        }
+
+        function togglePairsMode() {
+            if (pairsMode) {
+                _exitPairsMode();
+            } else {
+                _enterPairsMode();
+            }
+        }
+
+        function _enterPairsMode() {
+            // Mutual exclusion with the other overlay modes.
+            if (clickToMoveEnabled) toggleClickToMove();
+            if (cropDrawEnabled) toggleCropDraw();
+            pairsMode = true;
+            pairsState = 'wide';
+            pendingWide = null;
+
+            const cam1Overlay = document.getElementById('cam1-overlay');
+            cam1Overlay.style.display = 'block';
+            cam1Overlay.addEventListener('click', handleWidePairsClick);
+
+            const cam0Overlay = document.getElementById('cam0-overlay');
+            cam0Overlay.style.display = 'block';
+            cam0Overlay.addEventListener('click', handleZoomPairsClick);
+
+            _setDecorationsVisible(false);
+            _pairsBtnVisuals();
+            _updatePairsDisplay();
+        }
+
+        function _exitPairsMode() {
+            pairsMode = false;
+            pendingWide = null;
+
+            const cam1Overlay = document.getElementById('cam1-overlay');
+            cam1Overlay.removeEventListener('click', handleWidePairsClick);
+            // Only hide cam1-overlay if no other mode is using it.
+            if (!clickToMoveEnabled && !cropDrawEnabled) {
+                cam1Overlay.style.display = 'none';
+            }
+
+            const cam0Overlay = document.getElementById('cam0-overlay');
+            if (cam0Overlay) {
+                cam0Overlay.removeEventListener('click', handleZoomPairsClick);
+                cam0Overlay.style.display = 'none';
+            }
+
+            // Magnification is global and persists across pairs entry/exit.
+            _setDecorationsVisible(true);
+            _pairsBtnVisuals();
+            _updatePairsDisplay();
+        }
+
+        function handleWidePairsClick(ev) {
+            if (!pairsMode || pairsState !== 'wide') return;
+            ev.stopPropagation();
+            const rect = ev.currentTarget.getBoundingClientRect();
+            const x = ev.clientX - rect.left;
+            const y = ev.clientY - rect.top;
+            const sx = Math.round((x / rect.width) * SENSOR_W);
+            const sy = Math.round((y / rect.height) * SENSOR_H);
+            pendingWide = { x: sx, y: sy };
+            pairsState = 'zoom';
+            _addPairMarker('cam1-overlay', x, y, manualPairs.length + 1, '#00e5ff');
+            _updatePairsDisplay();
+        }
+
+        function handleZoomPairsClick(ev) {
+            if (!pairsMode || pairsState !== 'zoom' || !pendingWide) return;
+            ev.stopPropagation();
+            const rect = ev.currentTarget.getBoundingClientRect();
+            const x = ev.clientX - rect.left;
+            const y = ev.clientY - rect.top;
+            const sx = Math.round((x / rect.width) * SENSOR_W);
+            const sy = Math.round((y / rect.height) * SENSOR_H);
+            manualPairs.push({ wide: pendingWide, zoom: { x: sx, y: sy } });
+            pendingWide = null;
+            pairsState = 'wide';
+            _addPairMarker('cam0-overlay', x, y, manualPairs.length, '#ffd54f');
+            _updatePairsDisplay();
+        }
+
+        function _addPairMarker(overlayId, x, y, num, color) {
+            const overlay = document.getElementById(overlayId);
+            if (!overlay) return;
+            // Anchor the marker at the click position; the inner dot and label
+            // are positioned relative to the anchor with their own offsets so
+            // the label never sits on top of the click area.
+            const marker = document.createElement('div');
+            marker.className = 'pair-marker';
+            marker.style.cssText =
+                `position:absolute; left:${x}px; top:${y}px; ` +
+                'pointer-events:none; z-index:12;';
+
+            // 5px dot centered on the exact click point.
+            const dot = document.createElement('div');
+            dot.style.cssText =
+                'position:absolute; width:5px; height:5px; border-radius:50%; ' +
+                `background:${color}; border:1px solid black; ` +
+                'transform:translate(-50%,-50%);';
+            marker.appendChild(dot);
+
+            // Number label offset up-right of the dot. Text-shadow keeps it
+            // legible over any underlying content.
+            const label = document.createElement('div');
+            label.textContent = num;
+            label.style.cssText =
+                'position:absolute; left:6px; top:-18px; ' +
+                `color:${color}; font-size:11px; font-weight:bold; ` +
+                'text-shadow:0 0 2px black, 1px 1px 1px black; ' +
+                'white-space:nowrap;';
+            marker.appendChild(label);
+
+            overlay.appendChild(marker);
+            pairMarkers.push(marker);
+        }
+
+        function undoLastPair() {
+            if (pendingWide) {
+                // Cancel an in-flight pair (wide clicked but zoom not yet).
+                pendingWide = null;
+                pairsState = 'wide';
+                const m = pairMarkers.pop();
+                if (m && m.parentNode) m.parentNode.removeChild(m);
+            } else if (manualPairs.length > 0) {
+                manualPairs.pop();
+                // Two markers per completed pair (one wide, one zoom).
+                for (let i = 0; i < 2; i++) {
+                    const m = pairMarkers.pop();
+                    if (m && m.parentNode) m.parentNode.removeChild(m);
+                }
+            }
+            _updatePairsDisplay();
+        }
+
+        function clearPairs() {
+            manualPairs.length = 0;
+            pendingWide = null;
+            pairsState = 'wide';
+            while (pairMarkers.length) {
+                const m = pairMarkers.pop();
+                if (m && m.parentNode) m.parentNode.removeChild(m);
+            }
+            _updatePairsDisplay();
+        }
+
+        function computeFromPairs() {
+            if (manualPairs.length < 4) {
+                writeToConsole(`homography pairs: need at least 4 (have ${manualPairs.length})`);
+                return;
+            }
+            const tokens = ['compute_homography_pairs', String(manualPairs.length)];
+            manualPairs.forEach(p => {
+                tokens.push(p.wide.x, p.wide.y, p.zoom.x, p.zoom.y);
+            });
+            sendRawCommand(tokens.join(' '));
+            _homFittingBadge();
+        }
+
+        // cam0-overlay no longer needs JS repositioning — it's a child of
+        // #cam0-wrap with 100%/100% sizing, so it follows the wrap automatically.
+
+        // Thresholds for the green/yellow confidence badge. Keep in sync with
+        // the user-facing copy in renderHomographyState() below.
+        const HOM_MIN_INLIERS = 30;
+        const HOM_MAX_RMS_PX = 3.0;
+        // ECC correlation coefficient is in [-1, 1]; >0.7 is excellent, >0.5 is OK.
+        const HOM_MIN_ECC_CC = 0.5;
+
+        function renderHomographyState(msg) {
+            const display = document.getElementById('hom-display');
+            const badge = document.getElementById('hom-badge');
+            const quad = document.getElementById('zoom-quad');
+            const svg = document.getElementById('zoom-quad-overlay');
+            const rect = document.getElementById('red-zoom-indicator');
+            const debugLink = document.getElementById('hom-debug-link');
+
+            // Always render the debug link if present (success or failure).
+            if (debugLink) {
+                if (msg.debug_url) {
+                    // Match the existing 'last-capture' src convention — port 8000.
+                    const href = `http://${window.location.hostname}:8000${msg.debug_url}`;
+                    debugLink.innerHTML = `debug: <a href="${href}" target="_blank" style="color:#80d8ff;">${msg.debug_url}</a>`;
+                } else {
+                    debugLink.textContent = '';
+                }
+            }
+
+            if (!msg.ok) {
+                if (display) display.textContent = msg.message || 'calibration failed';
+                if (badge) {
+                    badge.textContent = 'failed';
+                    badge.style.background = '#b0a000';
+                    badge.style.color = 'black';
+                    badge.style.display = 'inline-block';
+                }
+                // Leave the previous quad in place on failure.
+                return;
+            }
+            const data = msg.data;
+            if (!data || !data.corners_wide_px || !data.wide_size) {
+                if (display) display.textContent = 'no fit cached';
+                if (badge) badge.style.display = 'none';
+                if (quad) quad.style.display = 'none';
+                // Leave the dashed rect at its default position so the legacy
+                // click-to-move offset math keeps working.
+                return;
+            }
+            lastHomographyData = data;
+            // SVG viewBox matches the wide-frame sensor resolution so the
+            // polygon points are raw pixel coords from the server.
+            const [wideW, wideH] = data.wide_size;
+            if (svg) svg.setAttribute('viewBox', `0 0 ${wideW} ${wideH}`);
+            if (quad) {
+                // Points are still updated (so the data is current if we ever
+                // want to re-enable the polygon), but the polygon stays hidden —
+                // the dashed bounding rect below is the user-facing indicator.
+                // Self-intersecting projections (out-of-order corner sequences
+                // from poorly conditioned homographies) made the polygon more
+                // confusing than helpful.
+                quad.setAttribute('points', data.corners_wide_px.map(c => c.join(',')).join(' '));
+                quad.style.display = 'none';
+            }
+            // The red bounding rect — the user-facing indicator of where the
+            // zoom is aimed within the wide view. Always rendered at the stream's
+            // aspect ratio (since the zoom camera's frame has the same fixed
+            // aspect), centered on the bbox of the projected zoom corners, sized
+            // to CONTAIN the bbox while respecting the aspect.
+            if (rect) {
+                const xs = data.corners_wide_px.map(c => c[0]);
+                const ys = data.corners_wide_px.map(c => c[1]);
+                const minX = Math.min(...xs), maxX = Math.max(...xs);
+                const minY = Math.min(...ys), maxY = Math.max(...ys);
+                const cx = (minX + maxX) / 2;
+                const cy = (minY + maxY) / 2;
+                const bboxW = maxX - minX;
+                const bboxH = maxY - minY;
+                // Force stream aspect: pick whichever of (bboxW, bboxH * aspect)
+                // is larger as the width — that contains the bbox in both axes.
+                const streamAspect = wideW / wideH;
+                const dispW = Math.max(bboxW, bboxH * streamAspect);
+                const dispH = dispW / streamAspect;
+                // Convert sensor coords to cam1-wrap's un-magnified local pixels.
+                // The wrap itself is never transformed (only #cam1-content is),
+                // so its getBoundingClientRect gives the original 365x206 size
+                // regardless of the current magnification level.
+                const wrap = document.getElementById('cam1-wrap');
+                const wrapRect = wrap.getBoundingClientRect();
+                const lx = wrapRect.width / wideW;
+                const ly = wrapRect.height / wideH;
+                rect.style.left = ((cx - dispW / 2) * lx) + 'px';
+                rect.style.top = ((cy - dispH / 2) * ly) + 'px';
+                rect.style.width = (dispW * lx) + 'px';
+                rect.style.height = (dispH * ly) + 'px';
+                rect.style.display = '';
+            }
+            // Status badge + readout. ECC and feature methods score differently.
+            const isEcc = data.method === 'ecc' || data.detector === 'ECC';
+            let good;
+            if (isEcc) {
+                good = typeof data.ecc_cc === 'number' && data.ecc_cc >= HOM_MIN_ECC_CC;
+            } else {
+                good = data.inliers >= HOM_MIN_INLIERS && data.rms_px <= HOM_MAX_RMS_PX;
+            }
+            if (badge) {
+                badge.textContent = good ? 'good' : 'low confidence';
+                badge.style.background = good ? '#2e7d32' : '#c19200';
+                badge.style.color = good ? 'white' : 'black';
+                badge.style.display = 'inline-block';
+            }
+            if (display) {
+                const detector = data.detector || '?';
+                const undist = data.undistorted ? ', undistorted' : '';
+                if (isEcc) {
+                    const cc = typeof data.ecc_cc === 'number' ? data.ecc_cc.toFixed(3) : '?';
+                    display.textContent = `cc=${cc}, detector=${detector}${undist}`;
+                } else {
+                    display.textContent =
+                        `inliers=${data.inliers}/${data.n_matches}, rms=${Number(data.rms_px).toFixed(2)}px, ` +
+                        `detector=${detector}${undist}`;
+                }
+                if (!good) {
+                    display.textContent += isEcc
+                        ? '  — try a tighter crop closer to the zoom-aim area'
+                        : '  — point at something more textured or farther away';
+                }
+            }
+        }
+
         function gotoLatLon() {
             const lat = document.getElementById('goto-lat').value;
             const lon = document.getElementById('goto-lon').value;
@@ -1307,6 +2059,11 @@
                 if (msg.type === 'pointing_state' && msg.data) {
                     renderPointingState(msg.data);
                     if (msg.message) writeToConsole(msg.message);
+                    return;
+                }
+                if (msg.type === 'homography_state') {
+                    renderHomographyState(msg);
+                    if (msg.message) writeToConsole(`homography: ${msg.message}`);
                     return;
                 }
                 if (msg.type === 'goto_result') {
@@ -1498,6 +2255,10 @@
         }
 
         function toggleClickToMove() {
+            // Mutual exclusion with crop-draw: turn it off before enabling click-to-move.
+            if (!clickToMoveEnabled && cropDrawEnabled) {
+                toggleCropDraw();
+            }
             clickToMoveEnabled = !clickToMoveEnabled;
             const btn = document.getElementById('click-to-move-btn');
             const status = document.getElementById('click-status');

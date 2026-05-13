@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import cv2
+import numpy as np
 from picamera2 import Picamera2
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FfmpegOutput
@@ -238,6 +240,33 @@ class _CameraStream:
                 request.release()
             return path
 
+    def capture_array(self, *, color: str = "gray") -> np.ndarray:
+        """Capture a single frame as a numpy array without interrupting the stream.
+
+        color = "gray" returns a (H, W) uint8 grayscale array — cheapest path,
+        suitable for feature detection.
+        color = "bgr"  returns a (H, W, 3) uint8 BGR array.
+
+        The stream is configured for YUV420 (see start()), so we release the
+        request as quickly as possible to keep the H.264 encoder fed, then do
+        the colour-space conversion outside the lock.
+        """
+        if color not in ("gray", "bgr"):
+            raise ValueError(f"color must be 'gray' or 'bgr', got {color!r}")
+        with self.lock:
+            if self.picam2 is None:
+                raise RuntimeError(f"cam{self.cam_idx} is not streaming")
+            request = self.picam2.capture_request()
+            try:
+                # YUV420 layout: (H*3/2, W) uint8. make_array() copies the
+                # buffer so it's safe to release the request immediately.
+                yuv = request.make_array("main")
+            finally:
+                request.release()
+        if color == "gray":
+            return cv2.cvtColor(yuv, cv2.COLOR_YUV2GRAY_I420)
+        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+
     def camera_controls_snapshot(self) -> dict:
         with self.lock:
             if self.picam2 is None:
@@ -306,6 +335,9 @@ class CameraManager:
 
     def capture_still(self, cam_idx: int, path: str) -> str:
         return self._stream(cam_idx).capture_still(path)
+
+    def capture_array(self, cam_idx: int, *, color: str = "gray") -> np.ndarray:
+        return self._stream(cam_idx).capture_array(color=color)
 
     def camera_controls_snapshot(self, cam_idx: int) -> dict:
         return self._stream(cam_idx).camera_controls_snapshot()

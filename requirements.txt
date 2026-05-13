@@ -6,6 +6,11 @@ colorzero==2.0
 gpiozero==2.0.1
 lgpio==0.2.2.0
 numpy==1.26.4
+# opencv-python is required for homography_calibration.py and camera_manager.capture_array.
+# It was already imported implicitly via record_camera.py; pinning here so installs are reproducible.
+# Install opencv-contrib-python instead if you want SIFT (better matches at high zoom ratios);
+# homography_calibration.py auto-detects and falls back to AKAZE otherwise.
+opencv-python>=4.8.0
 packaging==25.0
 pigpio==1.78
 pyerfa==2.0.1.5
