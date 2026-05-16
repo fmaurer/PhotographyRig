@@ -204,6 +204,12 @@
             0% { left: -100%; }
             100% { left: 100%; }
         }
+
+        #system-controls-panel,
+        #stepper-controls-panel,
+        #homography-panel {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -216,6 +222,7 @@
             <button data-mag="2" onclick="setMagnification(2)" title="2x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 10px; border: none; cursor: pointer;">2&times;</button>
             <button data-mag="3" onclick="setMagnification(3)" title="3x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 10px; border: none; cursor: pointer;">3&times;</button>
             <button data-mag="4" onclick="setMagnification(4)" title="4x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 10px; border: none; cursor: pointer;">4&times;</button>
+            <button id="shutdown-button-top" class="shutdown-trigger" onclick="sendShutdownCommand()" title="Shutdown the system" style="margin-left: auto; background-color: #b80000; color: white; font-weight: bold; padding: 3px 12px; border: none; border-radius: 3px; cursor: pointer;">&#x26D4; SHUTDOWN</button>
         </div>
 
         <div id="debug-controls">
@@ -355,6 +362,13 @@
                     <button onclick="quickStep('tilt', true)" style="background-color: gray; color: white; padding: 5px; border: none; cursor: pointer;">&uarr; Tilt Up</button>
                     <button onclick="quickStep('tilt', false)" style="background-color: gray; color: white; padding: 5px; border: none; cursor: pointer;">&darr; Tilt Down</button>
                 </div>
+                <div style="display: flex; gap: 4px; margin-top: 6px;">
+                    <input id="quick-goto-latlon" type="text"
+                           placeholder="lat, lon  (e.g. 37.789012, -122.411889)"
+                           onkeydown="if(event.key==='Enter') quickGotoLatLon();"
+                           style="flex: 1; min-width: 0; background-color: #333; color: white; padding: 5px; border: 1px solid #555;">
+                    <button onclick="quickGotoLatLon()" style="background-color: #FF5722; color: white; padding: 5px 10px; border: none; cursor: pointer; white-space: nowrap;">Point at</button>
+                </div>
             </div>
         </div>
 
@@ -423,9 +437,9 @@
         </div>
         
         <!-- System Controls -->
-        <div class="camera-controls">
+        <div class="camera-controls" id="system-controls-panel">
             <h2>System Controls</h2>
-            <button id="shutdown-button" onclick="sendShutdownCommand()">
+            <button id="shutdown-button" class="shutdown-trigger" onclick="sendShutdownCommand()">
                 &#x26D4; SHUTDOWN SYSTEM
             </button>
             <button onclick="testRecordingWithCanvas()" style="background-color: #2196F3; color: white; padding: 10px; margin: 5px;">
@@ -437,7 +451,7 @@
         </div>
 
         <!-- Stepper Motor Controls -->
-        <div class="camera-controls">
+        <div class="camera-controls" id="stepper-controls-panel">
             <h2>Stepper Motor Controls</h2>
             
             <!-- Current Position Display -->
@@ -642,7 +656,7 @@
                 <div id="imu-apply-status" style="color: #ccc; font-size: 12px; margin-top: 4px; font-family: monospace;"></div>
             </div>
 
-            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+            <div id="homography-panel" style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
                 <h3 style="margin: 0 0 6px 0; color: #FF5252; font-size: 14px;">Homography (red-box overlay)</h3>
                 <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">Aim at a textured, distant scene and press Calibrate. Fits zoom → wide and updates the overlay quad.</div>
                 <div style="margin-bottom: 6px;">
@@ -1313,11 +1327,13 @@
                     socket.send("shutdown");
                     writeToConsole("Sent: shutdown command");
                     
-                    // Disable the shutdown button to prevent multiple clicks
-                    const shutdownButton = document.getElementById('shutdown-button');
-                    shutdownButton.disabled = true;
-                    shutdownButton.innerHTML = "&#x21BA; SHUTTING DOWN...";
-                    shutdownButton.style.backgroundColor = "#666";
+                    // Disable every shutdown button (main + top bar) to prevent
+                    // multiple clicks and reflect the in-progress state.
+                    document.querySelectorAll('.shutdown-trigger').forEach(btn => {
+                        btn.disabled = true;
+                        btn.innerHTML = "&#x21BA; SHUTTING DOWN...";
+                        btn.style.backgroundColor = "#666";
+                    });
                     
                     // Show shutdown message
                     writeToConsole("System shutdown initiated...");
@@ -2063,6 +2079,25 @@
             if (lat === '' || lon === '') { writeToConsole("Goto requires lat and lon"); return; }
             const cmd = force ? 'force_goto_latlon' : 'goto_latlon';
             sendRawCommand(`${cmd} ${lat} ${lon} ${alt}`);
+        }
+
+        // "Point at" — parse a single Google-Maps-style lat/lon string (comma
+        // or whitespace separated) and dispatch a goto. Altitude defaults to
+        // whatever the full-form #goto-alt input holds, or 0 if empty.
+        function quickGotoLatLon() {
+            const raw = (document.getElementById('quick-goto-latlon').value || '').trim();
+            if (!raw) { writeToConsole("Point at: enter 'lat, lon'"); return; }
+            const parts = raw.split(/[\s,]+/).filter(Boolean);
+            if (parts.length < 2) { writeToConsole(`Point at: could not parse '${raw}' — expected lat and lon`); return; }
+            const lat = parseFloat(parts[0]);
+            const lon = parseFloat(parts[1]);
+            if (!isFinite(lat) || !isFinite(lon)) {
+                writeToConsole(`Point at: invalid numbers in '${raw}'`);
+                return;
+            }
+            const altEl = document.getElementById('goto-alt');
+            const alt = (altEl && altEl.value) ? altEl.value : '0';
+            sendRawCommand(`goto_latlon ${lat} ${lon} ${alt}`);
         }
 
         function previewGotoLatLon() {
