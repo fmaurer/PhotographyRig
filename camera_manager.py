@@ -9,7 +9,9 @@ Settings are loaded from camera_settings_cam{N}.json on start_streaming;
 runtime tweaks via set_exposure() go through libcamera's set_controls
 (applies on the next frame) and are persisted back to JSON.
 """
+import datetime
 import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -289,10 +291,15 @@ class CameraManager:
 
     CAMERA_INDICES = (0, 1)
 
-    def __init__(self, rtsp_host: str = "localhost", bitrate: int = 1_000_000):
+    def __init__(self, rtsp_host: str = "localhost", bitrate: int = 1_000_000,
+                 recording_dir: str = "recordings"):
+        self.rtsp_host = rtsp_host
         self.streams = {
             idx: _CameraStream(idx, rtsp_host, bitrate) for idx in self.CAMERA_INDICES
         }
+        self.recording_dir = recording_dir
+        self.recording_procs: dict = {}
+        self.recording_lock = threading.Lock()
 
     def start_all(self) -> None:
         for idx in self.CAMERA_INDICES:
@@ -341,3 +348,90 @@ class CameraManager:
 
     def camera_controls_snapshot(self, cam_idx: int) -> dict:
         return self._stream(cam_idx).camera_controls_snapshot()
+
+    def is_recording(self) -> bool:
+        with self.recording_lock:
+            return bool(self.recording_procs)
+
+    def start_recording(self) -> dict:
+        """Start an ffmpeg subprocess per camera that remuxes the live RTSP
+        feed into MP4 with stream copy (no re-encode). The Picamera2 H.264
+        encoder keeps running untouched."""
+        with self.recording_lock:
+            if self.recording_procs:
+                return {
+                    "status": "already_recording",
+                    "files": [self._recording_path(idx, self._current_ts)
+                              for idx in self.recording_procs],
+                    "timestamp": self._current_ts,
+                }
+
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            os.makedirs(self.recording_dir, exist_ok=True)
+            files = []
+            for cam_idx in self.CAMERA_INDICES:
+                output = os.path.join(self.recording_dir, f"cam{cam_idx}_{ts}.mp4")
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-rtsp_transport", "tcp",
+                    "-i", f"rtsp://{self.rtsp_host}:8554/cam{cam_idx}",
+                    "-c", "copy",
+                    "-f", "mp4",
+                    output,
+                ]
+                proc = subprocess.Popen(
+                    cmd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                self.recording_procs[cam_idx] = proc
+                files.append(output)
+                print(f"camera_manager: cam{cam_idx} recording -> {output}")
+
+            self._current_ts = ts
+            return {"status": "recording", "files": files, "timestamp": ts}
+
+    def stop_recording(self) -> dict:
+        """Gracefully finalise every running recording.
+
+        ffmpeg watches stdin for 'q' and finalises the MP4 (writes moov atom)
+        on receipt — far safer than SIGTERM, which can leave the file
+        unplayable. We fall back to terminate/kill if the graceful path
+        stalls."""
+        with self.recording_lock:
+            if not self.recording_procs:
+                return {"status": "not_recording"}
+
+            ts = getattr(self, "_current_ts", None)
+            files = []
+            for cam_idx, proc in self.recording_procs.items():
+                output = self._recording_path(cam_idx, ts)
+                files.append(output)
+                try:
+                    if proc.stdin and not proc.stdin.closed:
+                        proc.stdin.write(b"q")
+                        proc.stdin.flush()
+                        proc.stdin.close()
+                except (BrokenPipeError, OSError) as e:
+                    print(f"camera_manager: cam{cam_idx} stdin write: {e!r}")
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    print(f"camera_manager: cam{cam_idx} ffmpeg didn't quit "
+                          f"gracefully, terminating")
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                print(f"camera_manager: cam{cam_idx} recording stopped -> {output}")
+
+            self.recording_procs.clear()
+            self._current_ts = None
+            return {"status": "stopped", "files": files, "timestamp": ts}
+
+    def _recording_path(self, cam_idx: int, ts: Optional[str]) -> str:
+        if ts is None:
+            return ""
+        return os.path.join(self.recording_dir, f"cam{cam_idx}_{ts}.mp4")

@@ -210,7 +210,15 @@
 
     <div id="container">
 
-        <div id="debug-controls">   
+        <div id="top-mag-bar" style="padding: 4px 8px; background-color: #2a2a2a; border-radius: 4px; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+            <span style="font-size: 11px; color: #aaa;">Wide-view magnification:</span>
+            <button data-mag="1" onclick="setMagnification(1)" title="No magnification" style="background-color: #ffd54f; color: black; padding: 3px 10px; border: none; cursor: pointer;">1&times;</button>
+            <button data-mag="2" onclick="setMagnification(2)" title="2x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 10px; border: none; cursor: pointer;">2&times;</button>
+            <button data-mag="3" onclick="setMagnification(3)" title="3x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 10px; border: none; cursor: pointer;">3&times;</button>
+            <button data-mag="4" onclick="setMagnification(4)" title="4x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 10px; border: none; cursor: pointer;">4&times;</button>
+        </div>
+
+        <div id="debug-controls">
         </div>
 
         <div id="stream-container">
@@ -314,6 +322,39 @@
                     display: none;
                     transform-origin: center center;
                 "></div>
+            </div>
+
+            <!-- Quick motion controls — duplicated here so the most-used motion
+                 buttons (click-to-move + nudge pan/tilt) are reachable without
+                 scrolling. Step size is chosen from a preset dropdown so values
+                 stay sensible. All buttons here drive the same underlying
+                 functions as the originals further down. -->
+            <div id="quick-motion-controls" style="position: absolute;
+                                                   top: 252px; right: 21px;
+                                                   width: 365px; padding: 8px;
+                                                   background-color: #2a2a2a;
+                                                   border-radius: 4px; box-sizing: border-box;">
+                <div style="margin-bottom: 8px;">
+                    <button class="click-to-move-btn" onclick="toggleClickToMove()"
+                            style="background-color: #4CAF50; color: white; padding: 5px 10px; border: none; cursor: pointer; width: 100%;">
+                        Enable Click-to-Move
+                    </button>
+                </div>
+                <div style="margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+                    <label style="color: #aaa; font-size: 12px;">Step size:</label>
+                    <select id="quick-step-size" style="flex: 1; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                        <option value="tiny">Tiny (pan 15 / tilt 5)</option>
+                        <option value="small">Small (pan 45 / tilt 15)</option>
+                        <option value="medium" selected>Medium (pan 133 / tilt 50)</option>
+                        <option value="large">Large (pan 400 / tilt 150)</option>
+                    </select>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px;">
+                    <button onclick="quickStep('pan', false)" style="background-color: gray; color: white; padding: 5px; border: none; cursor: pointer;">&larr; Pan Left</button>
+                    <button onclick="quickStep('pan', true)"  style="background-color: gray; color: white; padding: 5px; border: none; cursor: pointer;">Pan Right &rarr;</button>
+                    <button onclick="quickStep('tilt', true)" style="background-color: gray; color: white; padding: 5px; border: none; cursor: pointer;">&uarr; Tilt Up</button>
+                    <button onclick="quickStep('tilt', false)" style="background-color: gray; color: white; padding: 5px; border: none; cursor: pointer;">&darr; Tilt Down</button>
+                </div>
             </div>
         </div>
 
@@ -455,7 +496,7 @@
             
             <div style="margin-bottom: 10px;">
                 <label style="color: gray; margin-right: 10px;">Click-to-Move:</label>
-                <button onclick="toggleClickToMove()" id="click-to-move-btn" style="background-color: #4CAF50; color: white; padding: 5px; margin-left: 10px;">Enable Click-to-Move</button>
+                <button onclick="toggleClickToMove()" id="click-to-move-btn" class="click-to-move-btn" style="background-color: #4CAF50; color: white; padding: 5px; margin-left: 10px;">Enable Click-to-Move</button>
                 <span id="click-status" style="color: gray; margin-left: 10px;">Disabled</span>
             </div>
             
@@ -571,9 +612,34 @@
             </div>
 
             <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
-                <h3 style="margin: 0 0 6px 0; color: #9C27B0; font-size: 14px;">Calibration</h3>
+                <h3 style="margin: 0 0 6px 0; color: #9C27B0; font-size: 14px;">Calibration (multi-landmark)</h3>
                 <button onclick="computePointingCalibration()" style="background-color: #9C27B0; color: white; padding: 5px 12px; border: none; cursor: pointer;">Compute</button>
                 <div id="cal-display" style="font-size: 12px; color: #ccc; margin-top: 6px; font-family: monospace;">Not calibrated</div>
+            </div>
+
+            <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #00C853; font-size: 14px;">IMU-Assisted Calibration</h3>
+                <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">
+                    Sweeps one axis a known number of steps while sampling the BNO085 game rotation vector
+                    (no magnetometer). Fit slope = steps/&deg;. Then apply IMU slopes against the captured
+                    references to lock offsets.
+                </div>
+                <div style="margin-bottom: 6px;">
+                    <label style="color: #ccc; font-size: 12px;">Pan sweep steps:</label>
+                    <input id="sweep-pan-steps" type="number" value="45000" style="width: 90px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <button onclick="startSweep('pan')" style="background-color: #00C853; color: white; padding: 5px 12px; border: none; cursor: pointer; margin-left: 4px;">Sweep Pan</button>
+                    <span id="sweep-pan-K" style="color: #ccc; font-family: monospace; font-size: 12px; margin-left: 10px;">K=--</span>
+                </div>
+                <div id="sweep-plot-pan" style="margin-bottom: 8px;"></div>
+                <div style="margin-bottom: 6px;">
+                    <label style="color: #ccc; font-size: 12px;">Tilt sweep steps:</label>
+                    <input id="sweep-tilt-steps" type="number" value="8000" style="width: 90px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <button onclick="startSweep('tilt')" style="background-color: #00C853; color: white; padding: 5px 12px; border: none; cursor: pointer; margin-left: 4px;">Sweep Tilt</button>
+                    <span id="sweep-tilt-K" style="color: #ccc; font-family: monospace; font-size: 12px; margin-left: 10px;">K=--</span>
+                </div>
+                <div id="sweep-plot-tilt" style="margin-bottom: 8px;"></div>
+                <button onclick="applyImuCalibration()" style="background-color: #FF6D00; color: white; padding: 5px 12px; border: none; cursor: pointer;">Apply IMU slopes + lock offsets from references</button>
+                <div id="imu-apply-status" style="color: #ccc; font-size: 12px; margin-top: 4px; font-family: monospace;"></div>
             </div>
 
             <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
@@ -628,10 +694,10 @@
                 <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">
                     Magnify the wide camera view to inspect detail or click precisely. Applies any time — picks a single setting that persists across all modes (calibrate, draw-crop, manual pairs).
                 </div>
-                <button id="mag-1" onclick="setMagnification(1)" title="No magnification" style="background-color: #ffd54f; color: black; padding: 3px 8px; border: none; cursor: pointer;">1&times;</button>
-                <button id="mag-2" onclick="setMagnification(2)" title="2x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">2&times;</button>
-                <button id="mag-3" onclick="setMagnification(3)" title="3x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">3&times;</button>
-                <button id="mag-4" onclick="setMagnification(4)" title="4x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">4&times;</button>
+                <button id="mag-1" data-mag="1" onclick="setMagnification(1)" title="No magnification" style="background-color: #ffd54f; color: black; padding: 3px 8px; border: none; cursor: pointer;">1&times;</button>
+                <button id="mag-2" data-mag="2" onclick="setMagnification(2)" title="2x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">2&times;</button>
+                <button id="mag-3" data-mag="3" onclick="setMagnification(3)" title="3x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">3&times;</button>
+                <button id="mag-4" data-mag="4" onclick="setMagnification(4)" title="4x magnify the wide view center" style="background-color: #555; color: white; padding: 3px 8px; border: none; cursor: pointer; margin-left: 2px;">4&times;</button>
             </div>
 
             <div style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
@@ -639,7 +705,10 @@
                 <input id="goto-lat" type="number" step="any" placeholder="lat" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
                 <input id="goto-lon" type="number" step="any" placeholder="lon" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
                 <input id="goto-alt" type="number" step="any" placeholder="alt (m)" value="0" style="width: 80px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
-                <button onclick="gotoLatLon()" style="background-color: #FF5722; color: white; padding: 5px 12px; border: none; cursor: pointer;">Go</button>
+                <button onclick="previewGotoLatLon()" style="background-color: #555; color: white; padding: 5px 12px; border: none; cursor: pointer;">Preview</button>
+                <button onclick="gotoLatLon(false)" style="background-color: #FF5722; color: white; padding: 5px 12px; border: none; cursor: pointer;">Go</button>
+                <button onclick="gotoLatLon(true)" title="Override the 180° pan / 60° tilt safety cap" style="background-color: #B71C1C; color: white; padding: 5px 12px; border: none; cursor: pointer;">Force</button>
+                <div id="goto-preview" style="margin-top: 6px; font-family: monospace; font-size: 12px; color: #ccc; white-space: pre-line;"></div>
             </div>
 
             <div style="padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
@@ -1657,9 +1726,8 @@
         }
 
         function _updateMagButtons() {
-            [1, 2, 3, 4].forEach(n => {
-                const btn = document.getElementById(`mag-${n}`);
-                if (!btn) return;
+            document.querySelectorAll('[data-mag]').forEach(btn => {
+                const n = parseInt(btn.getAttribute('data-mag'), 10);
                 const active = n === magnification;
                 btn.style.backgroundColor = active ? '#ffd54f' : '#555';
                 btn.style.color = active ? 'black' : 'white';
@@ -1731,7 +1799,9 @@
             const cam0Overlay = document.getElementById('cam0-overlay');
             if (cam0Overlay) {
                 cam0Overlay.removeEventListener('click', handleZoomPairsClick);
-                cam0Overlay.style.display = 'none';
+                // Click-to-move also uses this overlay (for cam0 fine-tune
+                // clicks). Only hide it if no other mode wants it.
+                if (!clickToMoveEnabled) cam0Overlay.style.display = 'none';
             }
 
             // Magnification is global and persists across pairs entry/exit.
@@ -1896,6 +1966,16 @@
                 return;
             }
             lastHomographyData = data;
+
+            // Successful fit landed — if it came from a manual-pairs run, the
+            // pair markers have done their job. Clear them so the wide view
+            // isn't littered with stale numbered dots. No-op on a fresh page
+            // load (no markers in the DOM yet) and on feature/ECC fits (no
+            // pairs were ever clicked).
+            if (data.method === 'pairs') {
+                clearPairs();
+            }
+
             // SVG viewBox matches the wide-frame sensor resolution so the
             // polygon points are raw pixel coords from the server.
             const [wideW, wideH] = data.wide_size;
@@ -1976,12 +2056,44 @@
             }
         }
 
-        function gotoLatLon() {
+        function gotoLatLon(force) {
             const lat = document.getElementById('goto-lat').value;
             const lon = document.getElementById('goto-lon').value;
             const alt = document.getElementById('goto-alt').value || '0';
             if (lat === '' || lon === '') { writeToConsole("Goto requires lat and lon"); return; }
-            sendRawCommand(`goto_latlon ${lat} ${lon} ${alt}`);
+            const cmd = force ? 'force_goto_latlon' : 'goto_latlon';
+            sendRawCommand(`${cmd} ${lat} ${lon} ${alt}`);
+        }
+
+        function previewGotoLatLon() {
+            const lat = document.getElementById('goto-lat').value;
+            const lon = document.getElementById('goto-lon').value;
+            const alt = document.getElementById('goto-alt').value || '0';
+            if (lat === '' || lon === '') { writeToConsole("Preview requires lat and lon"); return; }
+            sendRawCommand(`preview_goto_latlon ${lat} ${lon} ${alt}`);
+        }
+
+        function renderGotoPreview(msg) {
+            const el = document.getElementById('goto-preview');
+            if (!msg.ok || !msg.data) {
+                el.textContent = `Preview failed: ${msg.message || 'unknown error'}`;
+                el.style.color = '#F44336';
+                return;
+            }
+            const d = msg.data;
+            const pdd = d.pan_delta_deg, tdd = d.tilt_delta_deg;
+            const big = (pdd !== null && Math.abs(pdd) > 90) || (tdd !== null && Math.abs(tdd) > 30);
+            const huge = (pdd !== null && Math.abs(pdd) > 180) || (tdd !== null && Math.abs(tdd) > 60);
+            el.style.color = huge ? '#F44336' : (big ? '#FF9800' : '#4CAF50');
+            const fmt = (v, suffix) => v === null || v === undefined ? '--' : Number(v).toFixed(2) + suffix;
+            el.textContent =
+                `target: az=${fmt(d.az_deg, '°')}  el=${fmt(d.el_deg, '°')}\n` +
+                `motor target: pan=${d.pan_target_steps} steps  tilt=${d.tilt_target_steps} steps\n` +
+                `current: pan=${d.pan_now_steps} steps  tilt=${d.tilt_now_steps} steps\n` +
+                `delta:  pan=${d.pan_delta_steps} steps (${fmt(pdd, '°')})  ` +
+                `tilt=${d.tilt_delta_steps} steps (${fmt(tdd, '°')})` +
+                (huge ? '\n⚠ exceeds safety cap (pan>180° or tilt>60°). "Go" will refuse; use "Force" to override.' :
+                 (big ? '\n⚠ large move — verify before clicking Go.' : ''));
         }
 
         function refreshPointingState() {
@@ -2045,6 +2157,115 @@
             }
         }
 
+        // ---- IMU-assisted calibration ----
+        let lastSweepK = { pan: null, tilt: null };
+
+        function startSweep(axis) {
+            const inputId = axis === 'pan' ? 'sweep-pan-steps' : 'sweep-tilt-steps';
+            const stepsStr = document.getElementById(inputId).value;
+            const steps = parseInt(stepsStr, 10);
+            if (!steps || Math.abs(steps) < 50) {
+                writeToConsole(`${axis} sweep needs at least ±50 steps`);
+                return;
+            }
+            // Disable both sweep buttons while one runs.
+            for (const a of ['pan', 'tilt']) {
+                const btn = document.querySelector(`button[onclick=\"startSweep('${a}')\"]`);
+                if (btn) btn.disabled = true;
+            }
+            document.getElementById(`sweep-${axis}-K`).textContent = 'sweeping...';
+            sendRawCommand(`start_imu_axis_sweep ${axis} ${steps}`);
+        }
+
+        function handleSweepResult(msg) {
+            // Re-enable sweep buttons.
+            for (const a of ['pan', 'tilt']) {
+                const btn = document.querySelector(`button[onclick=\"startSweep('${a}')\"]`);
+                if (btn) btn.disabled = false;
+            }
+            const axis = msg.axis;
+            const kSpan = document.getElementById(`sweep-${axis}-K`);
+            if (!msg.ok) {
+                kSpan.textContent = `error: ${msg.message || 'unknown'}`;
+                kSpan.style.color = '#F44336';
+                writeToConsole(`Sweep ${axis} failed: ${msg.message}`);
+                return;
+            }
+            lastSweepK[axis] = msg.K;
+            kSpan.textContent = `K=${Number(msg.K).toFixed(2)} steps/° (over ${Number(msg.angle_span_deg).toFixed(2)}°, rms ${Number(msg.rms_deg).toFixed(4)}°, n=${msg.n_samples})`;
+            kSpan.style.color = '#00C853';
+            writeToConsole(msg.message);
+            renderSweepPlot(axis, msg.samples, msg.K, msg.intercept);
+        }
+
+        function renderSweepPlot(axis, samples, K, intercept) {
+            const container = document.getElementById(`sweep-plot-${axis}`);
+            if (!samples || samples.length === 0) {
+                container.innerHTML = '<div style="color: #888; font-size: 11px;">No data</div>';
+                return;
+            }
+            const W = 520, H = 180, ML = 50, MR = 10, MT = 18, MB = 32;
+            const xs = samples.map(s => s[0]);
+            const ys = samples.map(s => s[1]);
+            let xmin = Math.min(...xs), xmax = Math.max(...xs);
+            let ymin = Math.min(...ys), ymax = Math.max(...ys);
+            if (xmax - xmin < 1e-6) { xmax = xmin + 1; }
+            if (ymax - ymin < 1e-6) { ymax = ymin + 1; }
+            // Pad ranges a hair so endpoints aren't on the border.
+            const xpad = (xmax - xmin) * 0.04;
+            const ypad = (ymax - ymin) * 0.06;
+            xmin -= xpad; xmax += xpad; ymin -= ypad; ymax += ypad;
+            const sx = a => ML + (W - ML - MR) * (a - xmin) / (xmax - xmin);
+            const sy = b => H - MB - (H - MT - MB) * (b - ymin) / (ymax - ymin);
+
+            const dots = samples.map(s => `<circle cx="${sx(s[0]).toFixed(1)}" cy="${sy(s[1]).toFixed(1)}" r="2.2" fill="#4FC3F7" opacity="0.85"/>`).join('');
+            const fx1 = xmin, fy1 = K * xmin + intercept;
+            const fx2 = xmax, fy2 = K * xmax + intercept;
+            const fitLine = `<line x1="${sx(fx1).toFixed(1)}" y1="${sy(fy1).toFixed(1)}" x2="${sx(fx2).toFixed(1)}" y2="${sy(fy2).toFixed(1)}" stroke="#FF9800" stroke-width="2"/>`;
+
+            // Tick marks: 4 on each axis.
+            function ticks(min, max, n) {
+                const out = [];
+                for (let i = 0; i <= n; i++) {
+                    out.push(min + (max - min) * (i / n));
+                }
+                return out;
+            }
+            const xt = ticks(xmin + xpad, xmax - xpad, 4);
+            const yt = ticks(ymin + ypad, ymax - ypad, 4);
+            const xAxis = xt.map(t => `
+                <line x1="${sx(t)}" y1="${H-MB}" x2="${sx(t)}" y2="${H-MB+4}" stroke="#888"/>
+                <text x="${sx(t)}" y="${H-MB+16}" fill="#aaa" font-size="10" font-family="monospace" text-anchor="middle">${t.toFixed(2)}</text>
+            `).join('');
+            const yAxis = yt.map(t => `
+                <line x1="${ML-4}" y1="${sy(t)}" x2="${ML}" y2="${sy(t)}" stroke="#888"/>
+                <text x="${ML-6}" y="${sy(t)+3}" fill="#aaa" font-size="10" font-family="monospace" text-anchor="end">${Math.round(t)}</text>
+            `).join('');
+
+            const svg = `
+            <svg width="${W}" height="${H}" style="background:#101418; border:1px solid #333; border-radius:3px;">
+                <line x1="${ML}" y1="${H-MB}" x2="${W-MR}" y2="${H-MB}" stroke="#666"/>
+                <line x1="${ML}" y1="${MT}" x2="${ML}" y2="${H-MB}" stroke="#666"/>
+                ${xAxis}
+                ${yAxis}
+                ${fitLine}
+                ${dots}
+                <text x="${ML}" y="${MT-4}" fill="#eee" font-size="11" font-family="monospace">${axis} sweep: K=${K.toFixed(3)} steps/°</text>
+                <text x="${W-MR}" y="${H-4}" fill="#aaa" font-size="10" font-family="monospace" text-anchor="end">x: IMU ${axis==='pan'?'yaw':'pitch'} [°]  y: motor steps</text>
+            </svg>`;
+            container.innerHTML = svg;
+        }
+
+        function applyImuCalibration() {
+            if (lastSweepK.pan === null || lastSweepK.tilt === null) {
+                document.getElementById('imu-apply-status').textContent = "Run both Sweep Pan and Sweep Tilt first.";
+                return;
+            }
+            document.getElementById('imu-apply-status').textContent =
+                `Applying K_pan=${lastSweepK.pan.toFixed(3)}, K_tilt=${lastSweepK.tilt.toFixed(3)}…`;
+            sendRawCommand(`apply_imu_calibration ${lastSweepK.pan} ${lastSweepK.tilt}`);
+        }
+
         // Poll pointing state at 1 Hz so live position animates during slews.
         setInterval(() => quietSend('get_pointing_state'), 1000);
 
@@ -2076,6 +2297,14 @@
                     } else {
                         writeToConsole(`Goto failed: ${msg.message || 'unknown error'}`);
                     }
+                    return;
+                }
+                if (msg.type === 'imu_sweep_result') {
+                    handleSweepResult(msg);
+                    return;
+                }
+                if (msg.type === 'goto_preview') {
+                    renderGotoPreview(msg);
                     return;
                 }
             } catch (e) {
@@ -2126,12 +2355,21 @@
 
         // Add click event listener to overlay instead of iframe
         function setupClickToMove() {
-            const overlay = document.getElementById('cam1-overlay');
-            if (overlay) {
-                overlay.addEventListener('click', handleCam1Click);
-                overlay.style.display = clickToMoveEnabled ? 'block' : 'none';
-                writeToConsole("Click-to-move enabled for cam1 overlay");
+            // Attach handlers exactly once. Both handlers bail early on
+            // !clickToMoveEnabled, so toggling on/off doesn't stack listeners.
+            if (!setupClickToMove._attached) {
+                const cam1 = document.getElementById('cam1-overlay');
+                const cam0 = document.getElementById('cam0-overlay');
+                if (cam1) cam1.addEventListener('click', handleCam1Click);
+                if (cam0) cam0.addEventListener('click', handleCam0Click);
+                setupClickToMove._attached = true;
+                writeToConsole("Click-to-move handlers attached (cam1 + cam0)");
             }
+            const cam1 = document.getElementById('cam1-overlay');
+            const cam0 = document.getElementById('cam0-overlay');
+            const display = clickToMoveEnabled ? 'block' : 'none';
+            if (cam1) cam1.style.display = display;
+            if (cam0) cam0.style.display = display;
         }
 
         function handleCam1Click(event) {
@@ -2200,6 +2438,94 @@
             }
         }
 
+        // Click-to-move on the zoom view (cam0). Projects the zoom-sensor click
+        // through the cached homography to get the equivalent wide-sensor
+        // coordinate, then runs through the same pipeline as the wide click.
+        // Effectively a fine-tune step: the wide click gets you in the general
+        // area, then a zoom click moves by a much smaller angular delta because
+        // the projection scales with the zoom's narrower FOV.
+        function handleCam0Click(event) {
+            if (!clickToMoveEnabled) return;
+
+            const overlay = event.currentTarget;
+            const rect = overlay.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            // Visual feedback (red dot, fades after 1s).
+            _showClickDot('cam0-overlay', x, y);
+
+            // Browser pixels -> zoom sensor coords (1280x720).
+            const zx = (x / rect.width) * SENSOR_W;
+            const zy = (y / rect.height) * SENSOR_H;
+
+            if (!lastHomographyData || !lastHomographyData.H) {
+                // Uncalibrated fallback: treat the zoom click as a wide-view
+                // click at the same sensor coord. Wrong in scale (the zoom has
+                // a much narrower FOV than the wide, so the motor will move
+                // more than you'd want for a "fine-tune" click), but the
+                // motor at least responds. Calibrate a homography to get the
+                // proper FOV-scaled fine-tune behavior.
+                writeToConsole(
+                    `Cam0 click (no homography, fallback to wide-style): ` +
+                    `(${zx.toFixed(0)}, ${zy.toFixed(0)})`
+                );
+                handleMoveClick(zx, zy);
+                return;
+            }
+
+            // Project through H to get the click in wide-sensor coords.
+            const H = lastHomographyData.H;
+            const [pxH, pyH, pwH] = _hApply3x3(H, zx, zy);
+            const pWideX = pxH / pwH;
+            const pWideY = pyH / pwH;
+
+            // The zoom's current aim in wide-sensor coords (== H applied to the
+            // zoom-sensor center). Used to compute the offset that the wide
+            // handler subtracts, so the motor math is identical to a wide click.
+            const [cxH, cyH, cwH] = _hApply3x3(H, SENSOR_W / 2, SENSOR_H / 2);
+            const offsetWideX = (cxH / cwH) - SENSOR_W / 2;
+            const offsetWideY = (cyH / cwH) - SENSOR_H / 2;
+
+            // adjustedX: what handleCam1Click computes for an equivalent click —
+            // the wide-coord target with the current-zoom-aim offset subtracted.
+            const adjustedX = pWideX - offsetWideX;
+            const adjustedY = pWideY - offsetWideY;
+
+            writeToConsole(
+                `Cam0 click (${zx.toFixed(0)}, ${zy.toFixed(0)}) → ` +
+                `wide (${pWideX.toFixed(0)}, ${pWideY.toFixed(0)}) → ` +
+                `adj (${adjustedX.toFixed(0)}, ${adjustedY.toFixed(0)})`
+            );
+
+            handleMoveClick(adjustedX, adjustedY);
+        }
+
+        // Apply a 3x3 homography (row-major list-of-lists) to a point.
+        // Returns the homogeneous (x', y', w'); caller divides by w' to dehomogenize.
+        function _hApply3x3(H, x, y) {
+            return [
+                H[0][0] * x + H[0][1] * y + H[0][2],
+                H[1][0] * x + H[1][1] * y + H[1][2],
+                H[2][0] * x + H[2][1] * y + H[2][2],
+            ];
+        }
+
+        // Generic version of showClickIndicator that targets any overlay element by ID.
+        function _showClickDot(overlayId, x, y) {
+            const overlay = document.getElementById(overlayId);
+            if (!overlay) return;
+            const dot = document.createElement('div');
+            dot.style.cssText =
+                `position:absolute; left:${x}px; top:${y}px; ` +
+                'width:10px; height:10px; background:red; border-radius:50%; ' +
+                'pointer-events:none; z-index:20; transform:translate(-50%,-50%);';
+            overlay.appendChild(dot);
+            setTimeout(() => {
+                if (dot.parentNode) dot.parentNode.removeChild(dot);
+            }, 1000);
+        }
+
         function showClickIndicator(x, y) {
             // Create a temporary visual indicator
             const indicator = document.createElement('div');
@@ -2255,34 +2581,59 @@
         }
 
         function toggleClickToMove() {
-            // Mutual exclusion with crop-draw: turn it off before enabling click-to-move.
-            if (!clickToMoveEnabled && cropDrawEnabled) {
-                toggleCropDraw();
-            }
+            // Mutual exclusion with the other overlay modes.
+            if (!clickToMoveEnabled && cropDrawEnabled) toggleCropDraw();
+            if (!clickToMoveEnabled && pairsMode) togglePairsMode();
             clickToMoveEnabled = !clickToMoveEnabled;
-            const btn = document.getElementById('click-to-move-btn');
+            const btns = document.querySelectorAll('.click-to-move-btn');
             const status = document.getElementById('click-status');
-            const overlay = document.getElementById('cam1-overlay');
-            
+            const cam1 = document.getElementById('cam1-overlay');
+            const cam0 = document.getElementById('cam0-overlay');
+
             if (clickToMoveEnabled) {
-                btn.textContent = 'Disable Click-to-Move';
-                btn.style.backgroundColor = '#f44336';
+                btns.forEach(b => {
+                    b.textContent = 'Disable Click-to-Move';
+                    b.style.backgroundColor = '#f44336';
+                });
                 status.textContent = 'Enabled';
                 status.style.color = '#4CAF50';
-                overlay.style.display = 'block';
+                if (cam1) cam1.style.display = 'block';
+                if (cam0) cam0.style.display = 'block';
                 setupClickToMove();
-                
+
                 // Load stepper mapping if not already loaded
                 if (!stepperMapping) {
                     loadStepperMapping();
                 }
             } else {
-                btn.textContent = 'Enable Click-to-Move';
-                btn.style.backgroundColor = '#4CAF50';
+                btns.forEach(b => {
+                    b.textContent = 'Enable Click-to-Move';
+                    b.style.backgroundColor = '#4CAF50';
+                });
                 status.textContent = 'Disabled';
                 status.style.color = 'gray';
-                overlay.style.display = 'none';
+                if (cam1) cam1.style.display = 'none';
+                if (cam0) cam0.style.display = 'none';
             }
+        }
+
+        // Step-size presets for the quick motion controls at the top of the
+        // page. Driven by the #quick-step-size dropdown so the user picks a
+        // labelled magnitude instead of typing raw step counts. Default is
+        // "medium" which matches the legacy pan-amount / tilt-amount defaults.
+        const QUICK_STEP_PRESETS = {
+            tiny:   { pan: 15,  tilt: 5   },
+            small:  { pan: 45,  tilt: 15  },
+            medium: { pan: 133, tilt: 50  },
+            large:  { pan: 400, tilt: 150 },
+        };
+
+        function quickStep(type, reverse) {
+            const sel = document.getElementById('quick-step-size');
+            const preset = QUICK_STEP_PRESETS[sel ? sel.value : 'medium'] || QUICK_STEP_PRESETS.medium;
+            const amount = preset[type];
+            const value = (reverse ? -1 : 1) * amount;
+            sendCommand(type, value);
         }
 
         // New StepperMapping class that uses lookup image
@@ -2557,224 +2908,51 @@
             });
         }
 
-        // Recording functionality
-        const recordingStates = {
-            cam0: { isRecording: false, mediaRecorder: null, recordedChunks: [] },
-            cam1: { isRecording: false, mediaRecorder: null, recordedChunks: [] }
-        };
+        // Server-side recording. Both cameras record together — the
+        // websocket `record_start` / `record_stop` commands target the
+        // whole rig, not individual cameras. We track one global flag
+        // and just keep both buttons in sync so either click works.
+        const recordingStates = { isRecording: false };
+
+        function setRecordButtonsState(isRecording) {
+            ['record-cam0', 'record-cam1'].forEach(id => {
+                const btn = document.getElementById(id);
+                if (!btn) return;
+                btn.textContent = isRecording ? 'Stop Recording' : 'Start Recording';
+                btn.style.backgroundColor = isRecording ? '#f44336' : '#4CAF50';
+                btn.classList.toggle('recording', isRecording);
+            });
+        }
 
         function toggleRecording(cameraId) {
-
-            const state = recordingStates[cameraId];
-            const button = document.getElementById(`record-${cameraId}`);
-            
-            if (state.isRecording) {
-                stopRecording(cameraId);
+            if (recordingStates.isRecording) {
+                stopRecording();
             } else {
-                startRecording(cameraId);
+                startRecording();
             }
         }
 
-        function startRecording(cameraId) {
-            console.log("entered startRecording");
-            
-            const state = recordingStates[cameraId];
-            const button = document.getElementById(`record-${cameraId}`);
-            
-            // Try to get the video element first
-            let videoElement = document.getElementById(`${cameraId}-video`);
-            
-            // If video element doesn't exist or has no stream, try to create one
-            if (!videoElement || !videoElement.srcObject) {
-                console.log(`Video element for ${cameraId} not found or has no stream, creating new one`);
-                
-                // Create video element if it doesn't exist
-                if (!videoElement) {
-                    videoElement = document.createElement('video');
-                    videoElement.id = `${cameraId}-video`;
-                    videoElement.autoplay = true;
-                    videoElement.playsinline = true;
-                    videoElement.style.display = 'none'; // Hide it since we're using iframes
-                    document.body.appendChild(videoElement);
-                }
-                
-                // Try to get stream from WebRTC connection
-                if (webrtcConnections[cameraId] && webrtcConnections[cameraId].pc) {
-                    const pc = webrtcConnections[cameraId].pc;
-                    console.log(`WebRTC connection found for ${cameraId}, getting streams`);
-                    
-                    // Get all transceivers and find video streams
-                    const transceivers = pc.getTransceivers();
-                    let videoStream = null;
-                    
-                    for (const transceiver of transceivers) {
-                        if (transceiver.receiver && transceiver.receiver.track && transceiver.receiver.track.kind === 'video') {
-                            console.log(`Found video track for ${cameraId}`);
-                            // Create a new MediaStream with this track
-                            videoStream = new MediaStream([transceiver.receiver.track]);
-                            break;
-                        }
-                    }
-                    
-                    if (videoStream) {
-                        videoElement.srcObject = videoStream;
-                        console.log(`Set video stream for ${cameraId}`);
-                    } else {
-                        console.log(`No video stream found in WebRTC connection for ${cameraId}`);
-                        writeToConsole(`Cannot start recording ${cameraId}: No video stream available`);
-                        return;
-                    }
-                } else {
-                    console.log(`No WebRTC connection found for ${cameraId}`);
-                    writeToConsole(`Cannot start recording ${cameraId}: No WebRTC connection available`);
-                    return;
-                }
-            }
-            
-            console.log(`Video element for ${cameraId}:`, videoElement);
-            console.log(`Video srcObject:`, videoElement.srcObject);
-            
-            if (!videoElement.srcObject) {
-                writeToConsole(`Cannot start recording ${cameraId}: No video stream available`);
+        function startRecording() {
+            if (socket.readyState !== WebSocket.OPEN) {
+                writeToConsole('Cannot start recording: WebSocket not connected');
                 return;
             }
-            
-            try {
-                // Reset recorded chunks
-                state.recordedChunks = [];
-                
-                // Create MediaRecorder with the video stream
-                const stream = videoElement.srcObject;
-                console.log(`Creating MediaRecorder for ${cameraId} with stream:`, stream);
-                
-                const options = {
-                    mimeType: 'video/webm;codecs=vp9',
-                    videoBitsPerSecond: 5000000 // 5 Mbps for good quality
-                };
-                
-                // Fallback to VP8 if VP9 is not supported
-                if (!MediaRecorder.isTypeSupported(options.mimeType)) {
-                    options.mimeType = 'video/webm;codecs=vp8';
-                    console.log(`VP9 not supported, falling back to VP8`);
-                }
-                
-                console.log(`Using MIME type: ${options.mimeType}`);
-                
-                state.mediaRecorder = new MediaRecorder(stream, options);
-                console.log(`MediaRecorder created for ${cameraId}`);
-                
-                // Handle data available event
-                state.mediaRecorder.ondataavailable = (event) => {
-                    console.log(`Data available for ${cameraId}:`, event.data.size, 'bytes');
-                    if (event.data.size > 0) {
-                        state.recordedChunks.push(event.data);
-                    }
-                };
-                
-                // Handle recording stop event
-                state.mediaRecorder.onstop = () => {
-                    console.log(`Recording stopped for ${cameraId}`);
-                    downloadRecording(cameraId);
-                };
-                
-                // Handle recording start event
-                state.mediaRecorder.onstart = () => {
-                    console.log(`Recording started for ${cameraId}`);
-                };
-                
-                // Handle errors
-                state.mediaRecorder.onerror = (event) => {
-                    console.error(`MediaRecorder error for ${cameraId}:`, event);
-                    writeToConsole(`Recording error for ${cameraId}: ${event.error}`);
-                };
-                
-                // Start recording
-                state.mediaRecorder.start(1000); // Collect data every second
-                state.isRecording = true;
-                
-                // Update button appearance
-                button.textContent = 'Stop Recording';
-                button.style.backgroundColor = '#f44336';
-                button.classList.add('recording');
-                
-                writeToConsole(`Started recording ${cameraId}`);
-                console.log(`Recording started successfully for ${cameraId}`);
-                
-            } catch (error) {
-                console.error(`Error starting recording for ${cameraId}:`, error);
-                writeToConsole(`Error starting recording for ${cameraId}: ${error.message}`);
-            }
+            socket.send('record_start');
+            writeToConsole('Sent: record_start');
+            recordingStates.isRecording = true;
+            setRecordButtonsState(true);
         }
 
-        function stopRecording(cameraId) {
-            const state = recordingStates[cameraId];
-            const button = document.getElementById(`record-${cameraId}`);
-            
-            if (state.mediaRecorder && state.isRecording) {
-                state.mediaRecorder.stop();
-                state.isRecording = false;
-                
-                // Update button appearance
-                button.textContent = 'Start Recording';
-                button.style.backgroundColor = '#4CAF50';
-                button.classList.remove('recording');
-                
-                writeToConsole(`Stopped recording ${cameraId}`);
-            }
-        }
-
-        function downloadRecording(cameraId) {
-            const state = recordingStates[cameraId];
-            
-            if (state.recordedChunks.length === 0) {
-                writeToConsole(`No recording data available for ${cameraId}`);
+        function stopRecording() {
+            if (socket.readyState !== WebSocket.OPEN) {
+                writeToConsole('Cannot stop recording: WebSocket not connected');
                 return;
             }
-            
-            try {
-                // Create blob from recorded chunks
-                const blob = new Blob(state.recordedChunks, { type: 'video/webm' });
-                
-                // Create download link
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.style.display = 'none';
-                a.href = url;
-                
-                // Generate filename with timestamp
-                const now = new Date();
-                const timestamp = now.toISOString().replace(/[:.]/g, '-').slice(0, -5);
-                a.download = `${cameraId}_recording_${timestamp}.webm`;
-                
-                // Trigger download
-                document.body.appendChild(a);
-                a.click();
-                
-                // Cleanup
-                setTimeout(() => {
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-                }, 100);
-                
-                writeToConsole(`Recording ${cameraId} downloaded successfully`);
-                
-                // Reset recorded chunks
-                state.recordedChunks = [];
-                
-            } catch (error) {
-                writeToConsole(`Error downloading recording for ${cameraId}: ${error.message}`);
-            }
+            socket.send('record_stop');
+            writeToConsole('Sent: record_stop');
+            recordingStates.isRecording = false;
+            setRecordButtonsState(false);
         }
-
-        // Cleanup function for page unload
-        window.addEventListener('beforeunload', () => {
-            // Stop any active recordings
-            Object.keys(recordingStates).forEach(cameraId => {
-                if (recordingStates[cameraId].isRecording) {
-                    stopRecording(cameraId);
-                }
-            });
-        });
 
         async function detectAndUpdatePort() {
             // Try to detect the HTTP server port

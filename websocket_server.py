@@ -21,6 +21,7 @@ try:
         BNO_REPORT_GYROSCOPE,
         BNO_REPORT_MAGNETOMETER,
         BNO_REPORT_ROTATION_VECTOR,
+        BNO_REPORT_GAME_ROTATION_VECTOR,
     )
     from adafruit_bno08x.i2c import BNO08X_I2C
     IMU_AVAILABLE = True
@@ -70,6 +71,7 @@ class WebSocketServer:
             'timestamp': 0.0
         }
         self.imu_lock = threading.Lock()
+        self.bno_lock = threading.Lock()  # serializes all I2C reads against the BNO chip
         self.imu_thread = None
         self.imu_running = False
         self.bno = None
@@ -230,6 +232,14 @@ class WebSocketServer:
                 self.bno = BNO08X_I2C(i2c)
                 time.sleep(1)  # Give BNO08x time to boot before enabling features
                 self.bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
+                # Game rotation vector = gyro+accel fusion (no magnetometer).
+                # Used during IMU-assisted sweep calibration; immune to the
+                # stepper magnets that would corrupt the mag-fused yaw.
+                try:
+                    self.bno.enable_feature(BNO_REPORT_GAME_ROTATION_VECTOR)
+                    print("Game rotation vector enabled (for sweep calibration)")
+                except Exception as e:
+                    print(f"Could not enable game rotation vector: {e}")
                 print("IMU initialized successfully")
                 # Start IMU data collection
                 self.start_imu_streaming()
@@ -280,7 +290,8 @@ class WebSocketServer:
         """Background thread for collecting IMU data"""
         while self.imu_running and self.bno:
             try:
-                quat_i, quat_j, quat_k, quat_real = self.bno.quaternion  # (x, y, z, w)
+                with self.bno_lock:
+                    quat_i, quat_j, quat_k, quat_real = self.bno.quaternion  # (x, y, z, w)
                 rx, ry, rz = self.quaternion_to_euler(quat_real, quat_i, quat_j, quat_k)
                 
                 # Update IMU data with thread safety, applying calibration offsets
@@ -385,6 +396,165 @@ class WebSocketServer:
 
     def _tilt_steps_now(self):
         return self.motor_controller_tilt.driver.total_signed_steps
+
+    def _read_game_euler_deg(self):
+        """Read BNO game rotation vector (gyro+accel, no mag) -> (tilt, pan) in degrees.
+
+        Matches the rest of this codebase's axis mapping: the IMU is mounted so
+        that the rig's tilt motion shows up on the function's *roll* output (rx),
+        and the rig's pan motion shows up on the function's *yaw* output (rz).
+        See imu_data_collection_loop, where rx is stored as 'pitch' and the
+        level calibration captures rx ≈ 90°.
+
+        Returns (tilt_deg, pan_deg) or None if the IMU isn't available.
+        """
+        if not self.bno:
+            return None
+        with self.bno_lock:
+            quat_i, quat_j, quat_k, quat_real = self.bno.game_quaternion
+        roll_rad, _pitch_rad, yaw_rad = self.quaternion_to_euler(
+            quat_real, quat_i, quat_j, quat_k
+        )
+        # In this rig: function's roll axis = camera tilt, function's yaw axis = pan.
+        return math.degrees(roll_rad), math.degrees(yaw_rad)
+
+    async def _run_imu_axis_sweep(self, websocket, axis, signed_steps,
+                                  lash_pre_steps=200, settle_ms=500, sample_hz=50):
+        """Move one axis a known step delta and record (steps, IMU_angle) samples,
+        then fit a line. axis = 'pan' or 'tilt'. Pan uses yaw, tilt uses pitch.
+
+        Streams the result over the websocket as JSON:
+            {type: 'imu_sweep_result', axis, ok, K, intercept, rms_deg, n_samples,
+             samples: [[angle_deg, steps_signed], ...], message}
+        """
+        if axis not in ('pan', 'tilt'):
+            await websocket.send(json.dumps({
+                'type': 'imu_sweep_result', 'axis': axis, 'ok': False,
+                'message': "axis must be 'pan' or 'tilt'"
+            }))
+            return
+        if not self.bno:
+            await websocket.send(json.dumps({
+                'type': 'imu_sweep_result', 'axis': axis, 'ok': False,
+                'message': 'IMU not available'
+            }))
+            return
+        if abs(signed_steps) < 50:
+            await websocket.send(json.dumps({
+                'type': 'imu_sweep_result', 'axis': axis, 'ok': False,
+                'message': 'sweep too small (need at least 50 steps)'
+            }))
+            return
+
+        # Pause the 10 Hz IMU collection thread so we have exclusive access at
+        # the cadence we want, then sample in this thread.
+        was_running = self.imu_running
+        if was_running:
+            self.stop_imu_streaming()
+
+        try:
+            # Lash-eating pre-move in the same direction.
+            sign = 1 if signed_steps > 0 else -1
+            pre = sign * abs(lash_pre_steps)
+            if axis == 'pan':
+                await self.cancel_and_start_pan(pre)
+                mover = self.current_pan_movement
+            else:
+                await self.cancel_and_start_tilt(pre)
+                mover = self.current_tilt_movement
+            await asyncio.sleep(0.05)
+            if mover:
+                # Wait for pre-move to finish.
+                while mover.is_alive():
+                    await asyncio.sleep(0.02)
+            await asyncio.sleep(0.3)  # let mechanics settle
+
+            samples = []  # list of (angle_deg, steps_signed)
+
+            def read_axis_angle():
+                pe = self._read_game_euler_deg()
+                if pe is None:
+                    return None
+                tilt_deg, pan_deg = pe   # mapped to the rig's axes inside the helper
+                return pan_deg if axis == 'pan' else tilt_deg
+
+            def steps_now():
+                return self._pan_steps_now() if axis == 'pan' else self._tilt_steps_now()
+
+            # Baseline sample at rest.
+            t0 = time.time()
+            interval = 1.0 / max(1, sample_hz)
+            ang0 = read_axis_angle()
+            samples.append((ang0, steps_now()))
+
+            # Kick off the sweep move.
+            if axis == 'pan':
+                await self.cancel_and_start_pan(signed_steps)
+                mover = self.current_pan_movement
+            else:
+                await self.cancel_and_start_tilt(signed_steps)
+                mover = self.current_tilt_movement
+
+            # Sample while moving.
+            last = t0
+            while mover and mover.is_alive():
+                now = time.time()
+                if now - last >= interval:
+                    last = now
+                    ang = read_axis_angle()
+                    samples.append((ang, steps_now()))
+                await asyncio.sleep(min(interval, 0.01))
+
+            # Settling samples after motor stops.
+            settle_end = time.time() + settle_ms / 1000.0
+            while time.time() < settle_end:
+                ang = read_axis_angle()
+                samples.append((ang, steps_now()))
+                await asyncio.sleep(interval)
+
+            # Unwrap yaw for pan (game-rot-vec yaw wraps at ±180°).
+            import numpy as np
+            angles = [s[0] for s in samples if s[0] is not None]
+            steps_list = [s[1] for s in samples if s[0] is not None]
+            if len(angles) < 4:
+                raise RuntimeError(f"not enough samples: {len(angles)}")
+            if axis == 'pan':
+                angles = np.degrees(np.unwrap(np.deg2rad(angles))).tolist()
+
+            x = np.array(angles, dtype=float)
+            y = np.array(steps_list, dtype=float)
+            if np.ptp(x) < 0.5:
+                raise RuntimeError(f"IMU did not register enough rotation ({np.ptp(x):.3f}°)")
+
+            # Linear fit y = K * x + b
+            A = np.column_stack([x, np.ones_like(x)])
+            sol, *_ = np.linalg.lstsq(A, y, rcond=None)
+            K, b = float(sol[0]), float(sol[1])
+            resid_steps = y - (K * x + b)
+            rms_deg = float(np.sqrt(np.mean((resid_steps / K) ** 2))) if K else float('inf')
+            x_range = float(np.ptp(x))
+
+            await websocket.send(json.dumps({
+                'type': 'imu_sweep_result',
+                'axis': axis,
+                'ok': True,
+                'K': K,                   # steps per IMU-degree
+                'intercept': b,
+                'rms_deg': rms_deg,
+                'angle_span_deg': x_range,
+                'n_samples': len(angles),
+                'samples': list(zip(angles, steps_list)),
+                'message': (f"{axis} sweep: K={K:.2f} steps/° over {x_range:.2f}° "
+                            f"(rms residual {rms_deg:.4f}°, {len(angles)} samples)"),
+            }))
+        except Exception as e:
+            await websocket.send(json.dumps({
+                'type': 'imu_sweep_result', 'axis': axis, 'ok': False,
+                'message': f'sweep failed: {e}'
+            }))
+        finally:
+            if was_running:
+                self.start_imu_streaming()
 
     def _pointing_state_dict(self):
         state = self.pointing.state_dict()
@@ -575,19 +745,46 @@ class WebSocketServer:
         await asyncio.to_thread(self.homography.save)
         return fit, debug_url
 
-    async def _do_goto_latlon(self, lat, lon, alt_m):
+    # Safety caps so a sign / observer error can't spin the rig forever.
+    # Adjust here if a legitimate goto exceeds these.
+    MAX_PAN_DELTA_DEG = 180.0
+    MAX_TILT_DELTA_DEG = 60.0
+
+    def _preview_goto_latlon(self, lat, lon, alt_m):
         pan_target, tilt_target, az, el = self.pointing.latlon_to_steps(lat, lon, alt_m)
         pan_now = self._pan_steps_now()
         tilt_now = self._tilt_steps_now()
         pan_delta = pan_target - pan_now
         tilt_delta = tilt_target - tilt_now
-        await self.cancel_and_start_pan(pan_delta)
-        await self.cancel_and_start_tilt(tilt_delta)
+        # Convert step deltas back into degrees for human-readable preview.
+        f = self.pointing.fit
+        pan_delta_deg = pan_delta / f.pan_steps_per_deg if f and f.pan_steps_per_deg else None
+        tilt_delta_deg = tilt_delta / f.tilt_steps_per_deg if f and f.tilt_steps_per_deg else None
         return {
             'az_deg': az, 'el_deg': el,
             'pan_target_steps': pan_target, 'tilt_target_steps': tilt_target,
             'pan_delta_steps': pan_delta, 'tilt_delta_steps': tilt_delta,
+            'pan_delta_deg': pan_delta_deg, 'tilt_delta_deg': tilt_delta_deg,
+            'pan_now_steps': pan_now, 'tilt_now_steps': tilt_now,
         }
+
+    async def _do_goto_latlon(self, lat, lon, alt_m, force=False):
+        result = self._preview_goto_latlon(lat, lon, alt_m)
+        pdd = result.get('pan_delta_deg')
+        tdd = result.get('tilt_delta_deg')
+        if not force:
+            over_pan = pdd is not None and abs(pdd) > self.MAX_PAN_DELTA_DEG
+            over_tilt = tdd is not None and abs(tdd) > self.MAX_TILT_DELTA_DEG
+            if over_pan or over_tilt:
+                raise RuntimeError(
+                    f"goto would move pan={pdd:.1f}°, tilt={tdd:.1f}°; "
+                    f"limits are pan<={self.MAX_PAN_DELTA_DEG}°, tilt<={self.MAX_TILT_DELTA_DEG}°. "
+                    f"Use force_goto_latlon to override, or check that your observer location, "
+                    f"target lat/lon, and IMU-derived K signs all agree."
+                )
+        await self.cancel_and_start_pan(result['pan_delta_steps'])
+        await self.cancel_and_start_tilt(result['tilt_delta_steps'])
+        return result
 
     def start_stream(self, camera_index=None):
         """Start a single MediaMTX instance for both cameras"""
@@ -767,7 +964,8 @@ class WebSocketServer:
                         else:
                             confidence_note = (f"inliers={fit.inliers}, rms={fit.rms_px:.2f}px, "
                                                f"n={fit.n_matches}")
-                        msg = f"calibrated ({fit.detector}): {confidence_note}{crop_note}"
+                        msg = (f"calibrated ({fit.detector}): {confidence_note}{crop_note} "
+                               f"— saved to {os.path.basename(self.homography.path)}")
                         # Broadcast so every browser tab updates its overlay.
                         await self._broadcast_homography_state(message=msg, debug_url=debug_url)
                     except Exception as e:
@@ -811,7 +1009,8 @@ class WebSocketServer:
                     try:
                         fit, debug_url = await self._do_compute_homography_pairs(wide_pts, zoom_pts)
                         msg = (f"calibrated (manual_pairs): inliers={fit.inliers}/{fit.n_matches}, "
-                               f"rms={fit.rms_px:.2f}px")
+                               f"rms={fit.rms_px:.2f}px — saved to "
+                               f"{os.path.basename(self.homography.path)}")
                         await self._broadcast_homography_state(message=msg, debug_url=debug_url)
                     except Exception as e:
                         debug_url = getattr(e, "debug_url", None)
@@ -822,22 +1021,60 @@ class WebSocketServer:
                         )
                 elif command == "get_homography":
                     await self._send_homography_state(websocket)
-                elif command == "goto_latlon":
+                elif command == "goto_latlon" or command == "force_goto_latlon":
                     if len(parts) != 4:
-                        await websocket.send("Error: goto_latlon requires lat lon alt_m")
+                        await websocket.send(f"Error: {command} requires lat lon alt_m")
                         continue
                     try:
                         lat, lon, alt_m = float(parts[1]), float(parts[2]), float(parts[3])
-                        result = await self._do_goto_latlon(lat, lon, alt_m)
+                        result = await self._do_goto_latlon(lat, lon, alt_m, force=(command == "force_goto_latlon"))
                         await websocket.send(json.dumps({'type': 'goto_result', 'ok': True, 'data': result}))
                     except Exception as e:
                         await websocket.send(json.dumps({'type': 'goto_result', 'ok': False, 'message': str(e)}))
+                elif command == "preview_goto_latlon":
+                    if len(parts) != 4:
+                        await websocket.send("Error: preview_goto_latlon requires lat lon alt_m")
+                        continue
+                    try:
+                        lat, lon, alt_m = float(parts[1]), float(parts[2]), float(parts[3])
+                        result = self._preview_goto_latlon(lat, lon, alt_m)
+                        await websocket.send(json.dumps({'type': 'goto_preview', 'ok': True, 'data': result}))
+                    except Exception as e:
+                        await websocket.send(json.dumps({'type': 'goto_preview', 'ok': False, 'message': str(e)}))
                 elif command == "get_pointing_state":
                     await self._send_pointing_state(websocket)
                 elif command == "home_pointing":
                     self.motor_controller.driver.reset_step_counter()
                     self.motor_controller_tilt.driver.reset_step_counter()
                     await self._send_pointing_state(websocket, message="step counters zeroed")
+                elif command == "start_imu_axis_sweep":
+                    if len(parts) != 3:
+                        await websocket.send("Error: start_imu_axis_sweep requires <pan|tilt> <signed_steps>")
+                        continue
+                    try:
+                        axis = parts[1]
+                        signed_steps = int(parts[2])
+                        # Run the sweep without blocking the message loop.
+                        asyncio.create_task(self._run_imu_axis_sweep(websocket, axis, signed_steps))
+                    except Exception as e:
+                        await websocket.send(f"Error: {e}")
+                elif command == "apply_imu_calibration":
+                    if len(parts) != 3:
+                        await websocket.send("Error: apply_imu_calibration requires <K_pan> <K_tilt>")
+                        continue
+                    try:
+                        K_pan = float(parts[1])
+                        K_tilt = float(parts[2])
+                        fit = self.pointing.compute_with_fixed_slopes(K_pan, K_tilt)
+                        await self._send_pointing_state(
+                            websocket,
+                            message=(f"IMU-applied calibration: pan={fit.pan_steps_per_deg:.2f} steps/deg, "
+                                     f"tilt={fit.tilt_steps_per_deg:.2f} steps/deg, "
+                                     f"offsets locked from {fit.n_references} reference(s), "
+                                     f"rms={fit.rms_residual_deg:.3f} deg"),
+                        )
+                    except Exception as e:
+                        await self._send_pointing_state(websocket, ok=False, message=f"apply failed: {e}")
                 elif command == "shutdown":
                     # Handle shutdown command (no parameters needed)
                     await websocket.send("Shutting down server...")
@@ -920,10 +1157,28 @@ class WebSocketServer:
                         continue
                     pan_arg = int(parts[1])
                     tilt_arg = int(parts[2])
-                    
+
                     # Cancel any ongoing movements and start new ones
                     await self.cancel_and_start_pan(pan_arg)
                     await self.cancel_and_start_tilt(tilt_arg)
+                elif command == "record_start":
+                    if self.camera_manager is None:
+                        await websocket.send("Error: record unavailable (no CameraManager)")
+                    else:
+                        try:
+                            result = await asyncio.to_thread(self.camera_manager.start_recording)
+                            await websocket.send(f"record_start {json.dumps(result)}")
+                        except Exception as e:
+                            await websocket.send(f"Error: record_start failed: {e!r}")
+                elif command == "record_stop":
+                    if self.camera_manager is None:
+                        await websocket.send("Error: record unavailable (no CameraManager)")
+                    else:
+                        try:
+                            result = await asyncio.to_thread(self.camera_manager.stop_recording)
+                            await websocket.send(f"record_stop {json.dumps(result)}")
+                        except Exception as e:
+                            await websocket.send(f"Error: record_stop failed: {e!r}")
                 else:
                     # Handle two-part commands (original format)
                     if len(parts) != 2:
@@ -1013,9 +1268,16 @@ class WebSocketServer:
         # Stop IMU broadcasting
         self.stop_imu_broadcast()
         
+        # Finalise any in-flight recording so MP4 files stay playable.
+        if self.camera_manager is not None:
+            try:
+                self.camera_manager.stop_recording()
+            except Exception as e:
+                print(f"Error stopping recordings: {e!r}")
+
         # Stop video streams
         self.stop_stream()
-        
+
         # Stop capture process if running
         if self.capture_process:
             print("Stopping capture process...")
