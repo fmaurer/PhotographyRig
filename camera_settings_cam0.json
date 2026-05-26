@@ -1,7 +1,7 @@
 {
   "ExposureTime": 64565,
-  "AnalogueGain": 16.0,
-  "AeEnable": false,
+  "AnalogueGain": 13.9,
+  "AeEnable": true,
   "AwbEnable": true,
   "AwbMode": "auto",
   "Transform": {
@@ -18,5 +18,5 @@
     4056,
     3040
   ],
-  "ExposureValue": -1.8
+  "ExposureValue": -0.3
 }

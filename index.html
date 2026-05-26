@@ -546,11 +546,14 @@
                     <span style="color: gray; font-size: 11px; margin-left: 10px;">Use when motors are manually moved</span>
                 </div>
                 <div style="font-size: 12px; color: gray;">
-                    Automatically adds compensation steps when direction changes
+                    Automatically adds compensation steps when direction changes. When the backlash
+                    calibration JSON is present, direction-specific (pos vs neg) values from it are
+                    applied automatically; the input fields show the calibrated mean.
                 </div>
                 <div style="font-size: 11px; color: #E91E63; margin-top: 5px;">
                     Status: <span id="backlash-status">Ready</span>
                 </div>
+                <div id="backlash-calib-source" style="font-size: 11px; color: #888; margin-top: 4px; font-family: monospace;">Calibration: not loaded (using manual values)</div>
             </div>
         </div>
 
@@ -654,6 +657,51 @@
                 <div id="sweep-plot-tilt" style="margin-bottom: 8px;"></div>
                 <button onclick="applyImuCalibration()" style="background-color: #FF6D00; color: white; padding: 5px 12px; border: none; cursor: pointer;">Apply IMU slopes + lock offsets from references</button>
                 <div id="imu-apply-status" style="color: #ccc; font-size: 12px; margin-top: 4px; font-family: monospace;"></div>
+            </div>
+
+            <div id="backlash-panel" style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
+                <h3 style="margin: 0 0 6px 0; color: #26A69A; font-size: 14px;">Backlash Calibration</h3>
+                <div style="font-size: 11px; color: #aaa; margin-bottom: 6px;">
+                    Measures gear backlash (in steps) for yaw and pitch in both directions using optical
+                    feedback from the chosen camera. Aim at a textured scene before starting. Reads frames
+                    from the MediaMTX RTSP stream; aborts if the stream isn't available.
+                </div>
+                <div style="margin-bottom: 6px;">
+                    <label style="color: #ccc; font-size: 12px;">Camera:</label>
+                    <select id="backlash-cam" style="background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                        <option value="0" selected>cam0 (zoom)</option>
+                        <option value="1">cam1 (wide)</option>
+                    </select>
+                    <label style="color: #ccc; font-size: 12px; margin-left: 8px;">Trials:</label>
+                    <input id="backlash-trials" type="number" value="5" min="1" max="20" style="width: 60px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <label style="color: #ccc; font-size: 12px; margin-left: 8px;" title="Minimum number of trackable corner features required in the reference frame. Lower if calibration aborts with low_features on a scene that's obviously detailed (~5-10 is permissive, 20-50 is normal).">Min features:</label>
+                    <input id="backlash-texture-min" type="number" value="20" min="0" step="1" style="width: 60px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <label style="color: #ccc; font-size: 12px; margin-left: 8px;" title="Comma-separated motor-step counts for the YAW probes (also used for pitch unless Pitch probes is set). Each value should encompass yaw backlash; linear-fit's x-intercept is the backlash.">Yaw probes:</label>
+                    <input id="backlash-probe-steps" type="text" value="50,100,200,300,400" style="width: 130px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <label style="color: #ccc; font-size: 12px; margin-left: 8px;" title="Optional: comma-separated motor-step counts for the PITCH probes. Pitch usually has a much tighter gear ratio than yaw so it needs much smaller probes (e.g. 5,10,15,20,30) to stay in frame. Leave empty to reuse the Yaw probes for pitch too.">Pitch probes:</label>
+                    <input id="backlash-pitch-probe-steps" type="text" value="5,10,15,20,30" style="width: 110px; background-color: #333; color: white; padding: 4px; border: 1px solid #555;">
+                    <label style="color: #ccc; font-size: 12px; margin-left: 8px;" title="When enabled, the calibration writes a side-by-side composite PNG (reference | probe) for every probe, plus a summary.json, into backlash_debug/<timestamp>/. A link to view them appears in the status line on completion.">
+                        <input id="backlash-debug" type="checkbox" style="vertical-align: middle;"> Save debug frames
+                    </label>
+                    <button id="backlash-start-btn" onclick="startBacklashCalibration()" style="background-color: #26A69A; color: white; padding: 5px 12px; border: none; cursor: pointer; margin-left: 6px;">Calibrate Backlash</button>
+                    <button id="backlash-cancel-btn" onclick="cancelBacklashCalibration()" disabled style="background-color: #555; color: white; padding: 5px 12px; border: none; cursor: pointer; margin-left: 4px;">Cancel</button>
+                </div>
+                <div id="backlash-calib-status" style="color: #ccc; font-size: 12px; margin-top: 4px; font-family: monospace; min-height: 1.2em;">Idle.</div>
+                <table id="backlash-results-table" style="width: 100%; border-collapse: collapse; margin-top: 6px; font-family: monospace; font-size: 12px;">
+                    <thead>
+                        <tr style="color: #aaa; text-align: left;">
+                            <th style="padding: 3px 6px; border-bottom: 1px solid #444;">Axis / Dir</th>
+                            <th style="padding: 3px 6px; border-bottom: 1px solid #444;">Backlash (steps)</th>
+                            <th style="padding: 3px 6px; border-bottom: 1px solid #444;">std</th>
+                            <th style="padding: 3px 6px; border-bottom: 1px solid #444;" title="Slope of shift vs steps from the linear fit — pixels of image motion per commanded motor step.">Slope px/step</th>
+                            <th style="padding: 3px 6px; border-bottom: 1px solid #444;" title="Coefficient of determination of the linear fit. Closer to 1.0 means the shift-vs-N relationship was clean.">R²</th>
+                        </tr>
+                    </thead>
+                    <tbody id="backlash-results-body">
+                        <tr><td colspan="5" style="padding: 4px 6px; color: #888;">No results yet.</td></tr>
+                    </tbody>
+                </table>
+                <div id="backlash-warnings" style="color: #FFA726; font-size: 11px; margin-top: 4px; font-family: monospace;"></div>
             </div>
 
             <div id="homography-panel" style="margin-bottom: 8px; padding: 8px; background-color: #2a2a2a; border-radius: 4px;">
@@ -775,6 +823,11 @@
         function connect(socket){
             socket.onopen = function(event) {
                 writeToConsole("Connection opened");
+                // Ask the server for the cached backlash calibration so the
+                // pan/tilt comp picks up calibrated values without a manual
+                // recalibrate. The server also pushes this on connect, but
+                // requesting it here is harmless and covers any race.
+                try { socket.send('get_backlash_calibration'); } catch (_e) {}
             };
 
             socket.onmessage = function(event) {
@@ -1241,43 +1294,124 @@
             }
         }
         
+        // Per-direction backlash from calibration JSON.
+        //   directionalBacklash[axisKey][lastDir] = steps to add when reversing
+        //   FROM `lastDir` (the `axisKey`_pos / `axisKey`_neg JSON entry's mean).
+        // null when no calibration has been loaded.
+        let directionalBacklash = null;
+
         function applyBacklashCompensation(motorType, steps) {
             if (steps === 0) return steps;
-            
+
             const currentDirection = steps > 0 ? 1 : -1;
             let lastDirection;
             let backlashValue;
-            
+            let source;
+
             if (motorType === 'pan') {
                 lastDirection = lastPanDirection;
-                backlashValue = parseInt(document.getElementById('pan-backlash').value) || 0;
             } else if (motorType === 'tilt') {
                 lastDirection = lastTiltDirection;
-                backlashValue = parseInt(document.getElementById('tilt-backlash').value) || 0;
             } else {
                 return steps; // Not a motor command
             }
-            
+
+            // Prefer direction-specific value from calibration if available.
+            // The flank loaded by `lastDirection` is what we need to traverse,
+            // so backlash[axis][lastDir] is the right key.
+            const axisKey = motorType === 'pan' ? 'yaw' : 'pitch';
+            if (directionalBacklash && lastDirection !== 0
+                && directionalBacklash[axisKey]
+                && directionalBacklash[axisKey][lastDirection > 0 ? 'pos' : 'neg'] != null) {
+                backlashValue = Math.round(directionalBacklash[axisKey][lastDirection > 0 ? 'pos' : 'neg']);
+                source = 'calibrated';
+            } else {
+                const inputId = motorType === 'pan' ? 'pan-backlash' : 'tilt-backlash';
+                backlashValue = parseInt(document.getElementById(inputId).value) || 0;
+                source = 'manual';
+            }
+
             // If direction changed and backlash compensation is enabled
             if (lastDirection !== 0 && lastDirection !== currentDirection && backlashValue > 0) {
                 const compensation = currentDirection > 0 ? backlashValue : -backlashValue;
                 const totalSteps = steps + compensation;
-                
-                writeToConsole(`${motorType.toUpperCase()} backlash compensation: ${steps} + ${compensation} = ${totalSteps} steps`);
+
+                writeToConsole(`${motorType.toUpperCase()} backlash compensation (${source}): ${steps} + ${compensation} = ${totalSteps} steps`);
+
+                // Update direction tracking BEFORE returning so the next call
+                // sees the new state (the original code only ran this branch
+                // when no compensation fired, which left direction stale).
+                if (motorType === 'pan') lastPanDirection = currentDirection;
+                else lastTiltDirection = currentDirection;
+                updateBacklashStatus();
                 return totalSteps;
             }
-            
+
             // Update last direction for this motor
             if (motorType === 'pan') {
                 lastPanDirection = currentDirection;
             } else if (motorType === 'tilt') {
                 lastTiltDirection = currentDirection;
             }
-            
+
             // Update status display
             updateBacklashStatus();
-            
+
             return steps;
+        }
+
+        function applyBacklashCalibrationToUi(data) {
+            const sourceEl = document.getElementById('backlash-calib-source');
+            if (!data || !data.results) {
+                directionalBacklash = null;
+                if (sourceEl) sourceEl.textContent = 'Calibration: not loaded (using manual values)';
+                return;
+            }
+            const r = data.results;
+            // Prefer the explicit new key, fall back to the backwards-compat
+            // top-level `.mean` (which the calibrator also writes).
+            const pick = entry => entry && (
+                (entry.backlash_steps && entry.backlash_steps.mean) ?? entry.mean
+            );
+            const yawPos = pick(r.yaw_pos);
+            const yawNeg = pick(r.yaw_neg);
+            const pitchPos = pick(r.pitch_pos);
+            const pitchNeg = pick(r.pitch_neg);
+
+            directionalBacklash = {
+                yaw: { pos: yawPos, neg: yawNeg },
+                pitch: { pos: pitchPos, neg: pitchNeg },
+            };
+
+            // Populate the existing input fields with the mean of both directions
+            // so a user glancing at the panel sees a sensible number. The actual
+            // applied value is the direction-specific one (see applyBacklashCompensation).
+            const panInput = document.getElementById('pan-backlash');
+            const tiltInput = document.getElementById('tilt-backlash');
+            const yawMean = (yawPos != null && yawNeg != null) ? (yawPos + yawNeg) / 2 : (yawPos != null ? yawPos : yawNeg);
+            const pitchMean = (pitchPos != null && pitchNeg != null) ? (pitchPos + pitchNeg) / 2 : (pitchPos != null ? pitchPos : pitchNeg);
+            if (panInput && yawMean != null) panInput.value = Math.round(yawMean);
+            if (tiltInput && pitchMean != null) tiltInput.value = Math.round(pitchMean);
+
+            const fmt = v => v == null ? '?' : Number(v).toFixed(1);
+            const when = data.calibrated_at ? ` (${data.calibrated_at})` : '';
+            if (sourceEl) {
+                sourceEl.textContent =
+                    `Calibration: yaw pos/neg=${fmt(yawPos)}/${fmt(yawNeg)}, ` +
+                    `pitch pos/neg=${fmt(pitchPos)}/${fmt(pitchNeg)}${when}`;
+            }
+        }
+
+        function handleBacklashCalibrationState(msg) {
+            if (msg && msg.ok && msg.data) {
+                console.log('backlash_calibration_state received', msg.data);
+                writeToConsole('Backlash calibration loaded from server.');
+                applyBacklashCalibrationToUi(msg.data);
+            } else {
+                console.log('backlash_calibration_state: empty (no JSON on disk)');
+                writeToConsole('No saved backlash calibration on server (using manual values).');
+                applyBacklashCalibrationToUi(null);
+            }
         }
         
         function resetBacklashTracking() {
@@ -2301,6 +2435,245 @@
             sendRawCommand(`apply_imu_calibration ${lastSweepK.pan} ${lastSweepK.tilt}`);
         }
 
+        // ---- Backlash calibration ----
+        const BACKLASH_KEYS = ['yaw_pos', 'yaw_neg', 'pitch_pos', 'pitch_neg'];
+        const BACKLASH_LABELS = {
+            yaw_pos: 'yaw +', yaw_neg: 'yaw -',
+            pitch_pos: 'pitch +', pitch_neg: 'pitch -',
+        };
+        let backlashState = {};
+
+        function resetBacklashUi() {
+            backlashState = {};
+            for (const k of BACKLASH_KEYS) {
+                backlashState[k] = {
+                    trials: [],        // backlash_steps per trial
+                    slopes: [],        // slope_px_per_step per trial
+                    r_squareds: [],    // r_squared per trial
+                    low_confidence: false,
+                };
+            }
+            renderBacklashTable();
+            document.getElementById('backlash-warnings').textContent = '';
+        }
+
+        function setBacklashRunning(running) {
+            const startBtn = document.getElementById('backlash-start-btn');
+            const cancelBtn = document.getElementById('backlash-cancel-btn');
+            startBtn.disabled = running;
+            cancelBtn.disabled = !running;
+            cancelBtn.style.backgroundColor = running ? '#D32F2F' : '#555';
+        }
+
+        function startBacklashCalibration() {
+            const cam = parseInt(document.getElementById('backlash-cam').value, 10);
+            const trials = parseInt(document.getElementById('backlash-trials').value, 10) || 5;
+            const minFeaturesRaw = parseInt(document.getElementById('backlash-texture-min').value, 10);
+            const minFeatures = Number.isFinite(minFeaturesRaw) && minFeaturesRaw >= 0 ? minFeaturesRaw : 20;
+            const debug = document.getElementById('backlash-debug').checked ? 1 : 0;
+            // Yaw + pitch probe sizes — comma-separated, server parses each.
+            const sanitizeList = id => {
+                const raw = (document.getElementById(id).value || '')
+                    .split(',').map(s => s.trim()).filter(s => s && /^\d+$/.test(s))
+                    .join(',');
+                return raw;
+            };
+            const probeSteps = sanitizeList('backlash-probe-steps') || '50,100,200,300,400';
+            const pitchProbeSteps = sanitizeList('backlash-pitch-probe-steps');
+            if (cam !== 0 && cam !== 1) {
+                writeToConsole('Backlash: pick a valid camera');
+                return;
+            }
+            resetBacklashUi();
+            setBacklashRunning(true);
+            const pitchNote = pitchProbeSteps ? `, pitch=${pitchProbeSteps}` : '';
+            document.getElementById('backlash-calib-status').textContent =
+                `Starting (cam=${cam}, trials=${trials}, yaw_probes=${probeSteps}${pitchNote}` +
+                (debug ? ', debug=on' : '') + ')...';
+            // Positional arg order: cam trials max_steps settle_s engage_steps
+            //                       min_features debug probe_steps pitch_probe_steps
+            // pitch_probe_steps is optional; the server will use probe_steps
+            // for pitch too if it's empty. Empty-string token doesn't survive
+            // .split() on the server, so we send "_" as a placeholder that
+            // the server treats as empty.
+            const pitchArg = pitchProbeSteps || '_';
+            sendRawCommand(`calibrate_backlash ${cam} ${trials} 512 3.0 150 ${minFeatures} ${debug} ${probeSteps} ${pitchArg}`);
+        }
+
+        function cancelBacklashCalibration() {
+            sendRawCommand('cancel_backlash_calibration');
+            document.getElementById('backlash-calib-status').textContent = 'Cancelling...';
+        }
+
+        function fmtShift(dx, dy) {
+            if (dx === undefined || dy === undefined) return '--';
+            return `(${Number(dx).toFixed(2)}, ${Number(dy).toFixed(2)})`;
+        }
+
+        function renderBacklashTable() {
+            const body = document.getElementById('backlash-results-body');
+            const rows = BACKLASH_KEYS.map(k => {
+                const s = backlashState[k] || {};
+                const trials = s.trials || [];
+                const mean = trials.length ? (trials.reduce((a, b) => a + b, 0) / trials.length) : null;
+                const std = (trials.length > 1)
+                    ? Math.sqrt(trials.reduce((acc, v) => acc + (v - mean) * (v - mean), 0) / trials.length)
+                    : null;
+                const meanStr = mean === null ? '--' : `${mean.toFixed(1)} (n=${trials.length})`;
+                const stdStr = std === null ? '--' : std.toFixed(2);
+                // Slope and R² come from the linear-fit algorithm. During a
+                // run we accumulate them per trial; for live display we
+                // average across the trials seen so far.
+                const slopes = s.slopes || [];
+                const slopeMean = slopes.length ? (slopes.reduce((a, b) => a + b, 0) / slopes.length) : null;
+                const slopeStr = slopeMean === null ? '--' : slopeMean.toFixed(2);
+                const r2s = s.r_squareds || [];
+                const r2Mean = r2s.length ? (r2s.reduce((a, b) => a + b, 0) / r2s.length) : null;
+                const r2Str = r2Mean === null ? '--' : r2Mean.toFixed(3);
+                const rowColor = s.low_confidence ? '#FFA726' : '#fff';
+                return `<tr>
+                    <td style="padding: 3px 6px; color: #ccc;">${BACKLASH_LABELS[k]}</td>
+                    <td style="padding: 3px 6px; color: ${rowColor};">${meanStr}</td>
+                    <td style="padding: 3px 6px; color: #aaa;">${stdStr}</td>
+                    <td style="padding: 3px 6px; color: #aaa;">${slopeStr}</td>
+                    <td style="padding: 3px 6px; color: #aaa;">${r2Str}</td>
+                </tr>`;
+            }).join('');
+            body.innerHTML = rows;
+        }
+
+        function handleBacklashProgress(msg) {
+            const status = document.getElementById('backlash-calib-status');
+            if (msg.phase === 'starting') {
+                status.textContent = `Opening ${msg.rtsp_url}...`;
+                return;
+            }
+            if (msg.phase === 'initial_settle') {
+                status.textContent = `Initial settle (${Number(msg.duration_s).toFixed(1)}s) - let the mechanism stop ringing...`;
+                return;
+            }
+            if (msg.phase === 'init') {
+                const probesEff = (msg.probe_steps_effective || []).join(',');
+                const probesUser = (msg.probe_steps_user || []).join(',');
+                const probesNote = (probesEff && probesEff !== probesUser)
+                    ? ` probes=[${probesEff}] (clamped from [${probesUser}])`
+                    : (probesEff ? ` probes=[${probesEff}]` : '');
+                status.textContent = `Init: frame=${msg.frame_size[0]}x${msg.frame_size[1]},` +
+                    ` max_steps=${msg.max_steps_effective}${probesNote}`;
+                if (probesEff && probesEff !== probesUser) {
+                    writeToConsole(`Backlash probe sizes clamped to FOV: [${probesEff}] (asked for [${probesUser}])`);
+                }
+                return;
+            }
+            if (msg.phase === 'engaging') {
+                status.textContent = `Engaging ${BACKLASH_LABELS[`${msg.axis}_${msg.direction}`]}...`;
+                return;
+            }
+            if (msg.phase === 'probe') {
+                const key = `${msg.axis}_${msg.direction}`;
+                status.textContent =
+                    `Probe ${BACKLASH_LABELS[key]} trial ${msg.trial}: N=${msg.n_steps}, ` +
+                    `shift=${Number(msg.shift_px).toFixed(3)} px`;
+                return;
+            }
+            if (msg.phase === 'ae_lock_failed') {
+                writeToConsole(`Backlash: AE lock failed - ${msg.error}`);
+                return;
+            }
+            if (msg.phase === 'done') {
+                status.textContent = `Done. Saved to ${msg.path}`;
+                return;
+            }
+        }
+
+        function handleBacklashTrialDone(msg) {
+            const key = `${msg.axis}_${msg.direction}`;
+            const s = backlashState[key];
+            if (s) {
+                s.trials.push(msg.backlash_steps);
+                if (typeof msg.slope_px_per_step === 'number') s.slopes.push(msg.slope_px_per_step);
+                if (typeof msg.r_squared === 'number') s.r_squareds.push(msg.r_squared);
+            }
+            renderBacklashTable();
+        }
+
+        function handleBacklashResult(msg) {
+            setBacklashRunning(false);
+            const status = document.getElementById('backlash-calib-status');
+
+            // The debug_url is server-generated (timestamp under backlash_debug/),
+            // so it's safe to embed in HTML. Build the suffix once for both
+            // success and failure branches.
+            const links = [];
+            if (msg.debug_url) {
+                links.push(`<a href="${msg.debug_url}" target="_blank" style="color:#26A69A; text-decoration:underline;">view frames</a>`);
+            }
+            if (msg.plot_url) {
+                links.push(`<a href="${msg.plot_url}" target="_blank" style="color:#26A69A; text-decoration:underline;">view plot</a>`);
+            }
+            const debugSuffix = links.length ? ` — ${links.join(' | ')}` : '';
+
+            if (!msg.ok) {
+                let txt;
+                if (msg.cancelled) {
+                    txt = 'Cancelled.';
+                } else {
+                    txt = `Error: ${msg.error || 'unknown'}`;
+                    if (msg.reason) txt += ` (${msg.reason})`;
+                }
+                // Render via innerHTML so the debug link is clickable. The
+                // dynamic pieces (error, reason) come from the server too.
+                status.innerHTML = escapeForStatus(txt) + debugSuffix;
+                writeToConsole(`Backlash calibration failed: ${msg.error || 'unknown'}`);
+                return;
+            }
+            const data = msg.data || {};
+            const results = data.results || {};
+            for (const key of BACKLASH_KEYS) {
+                const r = results[key];
+                if (!r) continue;
+                const s = backlashState[key] || (backlashState[key] = {
+                    trials: [], slopes: [], r_squareds: [], low_confidence: false,
+                });
+                // New shape: r.backlash_steps.trials / r.slope_px_per_step.trials / r.r_squared_trials.
+                s.trials = ((r.backlash_steps && r.backlash_steps.trials) || r.trials || []).slice();
+                s.slopes = ((r.slope_px_per_step && r.slope_px_per_step.trials) || []).slice();
+                s.r_squareds = (r.r_squared_trials || []).slice();
+                s.low_confidence = !!r.low_confidence;
+            }
+            renderBacklashTable();
+            const w = (data.warnings || []);
+            document.getElementById('backlash-warnings').textContent = w.length ? w.join('\n') : '';
+            const doneText = `Done. Saved to ${msg.path || 'backlash_calibration.json'}`;
+            status.innerHTML = escapeForStatus(doneText) + debugSuffix;
+            writeToConsole(`Backlash calibration complete.`);
+            // Push the fresh values into the compensation pipeline immediately;
+            // the server also broadcasts backlash_calibration_state, but doing
+            // it here makes the UI feel snappy even if that broadcast races.
+            applyBacklashCalibrationToUi(data);
+        }
+
+        function escapeForStatus(s) {
+            // Defensive HTML-escape for the status line, since we now use
+            // innerHTML to embed the debug link.
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        function handleBacklashCancelAck(msg) {
+            if (msg.ok) {
+                document.getElementById('backlash-calib-status').textContent = 'Cancel requested...';
+            } else {
+                writeToConsole(`Backlash cancel: ${msg.message || 'no run active'}`);
+            }
+        }
+
+        // Initialise the backlash table on page load.
+        resetBacklashUi();
+
         // Poll pointing state at 1 Hz so live position animates during slews.
         setInterval(() => quietSend('get_pointing_state'), 1000);
 
@@ -2340,6 +2713,26 @@
                 }
                 if (msg.type === 'goto_preview') {
                     renderGotoPreview(msg);
+                    return;
+                }
+                if (msg.type === 'backlash_progress') {
+                    handleBacklashProgress(msg);
+                    return;
+                }
+                if (msg.type === 'backlash_trial_done') {
+                    handleBacklashTrialDone(msg);
+                    return;
+                }
+                if (msg.type === 'backlash_result') {
+                    handleBacklashResult(msg);
+                    return;
+                }
+                if (msg.type === 'backlash_cancel_ack') {
+                    handleBacklashCancelAck(msg);
+                    return;
+                }
+                if (msg.type === 'backlash_calibration_state') {
+                    handleBacklashCalibrationState(msg);
                     return;
                 }
             } catch (e) {

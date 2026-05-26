@@ -1,7 +1,7 @@
 {
   "ExposureTime": 1000,
   "AnalogueGain": 5.5,
-  "AeEnable": false,
+  "AeEnable": true,
   "AwbEnable": true,
   "AwbMode": "auto",
   "Transform": {

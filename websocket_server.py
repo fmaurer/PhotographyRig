@@ -31,6 +31,11 @@ except ImportError:
 
 from pointing_calibration import PointingCalibration, earth_to_azel
 from homography_calibration import HomographyCalibration
+from backlash_calibration import (
+    BacklashCalibrator,
+    CalibrationAborted as BacklashAborted,
+    CalibrationCancelled as BacklashCancelled,
+)
 
 
 # Camera index mapping for homography. In this rig the cam1 iframe is the
@@ -83,6 +88,24 @@ class WebSocketServer:
         
         # Track connected clients for broadcasting
         self.connected_clients = set()
+
+        # Backlash calibration state (one run at a time).
+        self._backlash_calibrator = None
+        self._backlash_lock = threading.Lock()
+        self._backlash_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "backlash_calibration.json")
+        self._backlash_data = self._load_backlash_calibration()
+        if self._backlash_data:
+            res = self._backlash_data.get("results", {})
+            try:
+                yaw_p = res.get("yaw_pos", {}).get("mean")
+                yaw_n = res.get("yaw_neg", {}).get("mean")
+                pit_p = res.get("pitch_pos", {}).get("mean")
+                pit_n = res.get("pitch_neg", {}).get("mean")
+                print(f"Backlash calibration loaded: yaw=({yaw_p}/{yaw_n}), "
+                      f"pitch=({pit_p}/{pit_n}) steps (pos/neg)")
+            except Exception:
+                pass
         
         # Initialize IMU
         self.setup_imu()
@@ -556,6 +579,120 @@ class WebSocketServer:
             if was_running:
                 self.start_imu_streaming()
 
+    async def _run_backlash(self, websocket, cam_idx, trials, max_steps,
+                            settle_s, engage_steps, min_features,
+                            debug=False, probe_steps=None,
+                            pitch_probe_steps=None):
+        """Drive a BacklashCalibrator from a worker thread, pumping progress
+        messages back to the websocket. Broadcasts the final result so every
+        connected UI sees it."""
+        loop = asyncio.get_running_loop()
+
+        async def _send_progress(msg):
+            text = json.dumps(msg)
+            # Send to the originating socket; tolerate it being closed.
+            try:
+                await websocket.send(text)
+            except websockets.exceptions.ConnectionClosed:
+                pass
+
+        def _progress_cb(msg):
+            # Called from the worker thread — hop back to the event loop.
+            asyncio.run_coroutine_threadsafe(_send_progress(msg), loop)
+
+        with self._backlash_lock:
+            if self._backlash_calibrator is not None:
+                await websocket.send(json.dumps({
+                    'type': 'backlash_result', 'ok': False,
+                    'error': 'calibration already running',
+                }))
+                return
+            debug_abs, debug_url = (self._new_backlash_debug_dir()
+                                    if debug else (None, None))
+            calibrator = BacklashCalibrator(
+                self.motor_controller, self.motor_controller_tilt,
+                self.camera_manager, cam_idx,
+                trials=trials, max_steps=max_steps,
+                settle_s=settle_s, engage_steps=engage_steps,
+                min_features=min_features,
+                probe_steps=probe_steps,
+                pitch_probe_steps=pitch_probe_steps,
+                debug_dir=debug_abs,
+                progress_callback=_progress_cb,
+            )
+            self._backlash_calibrator = calibrator
+
+        try:
+            payload = await asyncio.to_thread(calibrator.run)
+            result = {'type': 'backlash_result', 'ok': True,
+                      'path': calibrator.output_path, 'data': payload}
+            # Refresh cached state so compensation picks up the new values.
+            self._backlash_data = payload
+        except BacklashCancelled:
+            result = {'type': 'backlash_result', 'ok': False,
+                      'cancelled': True, 'error': 'cancelled'}
+        except BacklashAborted as e:
+            result = {'type': 'backlash_result', 'ok': False,
+                      'error': str(e), 'reason': e.reason}
+        except Exception as e:
+            result = {'type': 'backlash_result', 'ok': False,
+                      'error': f'{type(e).__name__}: {e}'}
+        finally:
+            with self._backlash_lock:
+                self._backlash_calibrator = None
+        if debug_url:
+            # Surface the debug URL even on cancel/abort so partial dumps
+            # (e.g. the reference frame from a low_texture abort) stay
+            # discoverable.
+            result['debug_url'] = debug_url
+        # Plot URL — prefer the per-run copy in the debug dir (tied to
+        # the dataset the user just looked at). Fall back to the stable
+        # project-root copy that's always overwritten on success.
+        project_root = os.path.dirname(os.path.abspath(__file__))
+        stable_plot = os.path.join(project_root, "backlash_plot.png")
+        per_run_plot = (os.path.join(debug_abs, "backlash_plot.png")
+                        if debug_abs else None)
+        if per_run_plot and os.path.exists(per_run_plot) and debug_url:
+            result['plot_url'] = debug_url.rstrip('/') + "/backlash_plot.png"
+        elif os.path.exists(stable_plot):
+            result['plot_url'] = "/backlash_plot.png"
+
+        await self._broadcast_json(result)
+        # Push the refreshed state so any open UI updates its compensation.
+        if result.get('ok'):
+            await self._broadcast_json(self._backlash_state_payload())
+
+    def _load_backlash_calibration(self):
+        """Best-effort load of backlash_calibration.json. Returns dict or None."""
+        try:
+            with open(self._backlash_path, "r") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            print(f"backlash calibration: failed to load {self._backlash_path}: {e}")
+            return None
+
+    def _backlash_state_payload(self):
+        return {
+            "type": "backlash_calibration_state",
+            "ok": self._backlash_data is not None,
+            "data": self._backlash_data,
+        }
+
+    async def _broadcast_json(self, payload):
+        """Send a JSON payload to every connected client (best-effort)."""
+        if not self.connected_clients:
+            return
+        text = json.dumps(payload)
+        disconnected = set()
+        for client in self.connected_clients:
+            try:
+                await client.send(text)
+            except websockets.exceptions.ConnectionClosed:
+                disconnected.add(client)
+        self.connected_clients -= disconnected
+
     def _pointing_state_dict(self):
         state = self.pointing.state_dict()
         pan_now = self._pan_steps_now()
@@ -687,6 +824,14 @@ class WebSocketServer:
         rel = os.path.join("homography_debug", ts)
         abs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), rel)
         # Use forward slashes for the URL regardless of OS.
+        url = "/" + rel.replace(os.sep, "/") + "/"
+        return abs_path, url
+
+    def _new_backlash_debug_dir(self):
+        """Same convention as _new_homography_debug_dir but for backlash runs."""
+        ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        rel = os.path.join("backlash_debug", ts)
+        abs_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), rel)
         url = "/" + rel.replace(os.sep, "/") + "/"
         return abs_path, url
 
@@ -836,6 +981,13 @@ class WebSocketServer:
                 await self._send_homography_state(websocket, message="cached fit")
             except Exception as e:
                 print(f"Failed to push cached homography on connect: {e}")
+
+        # Push cached backlash calibration so client-side comp can self-populate.
+        if self._backlash_data is not None:
+            try:
+                await websocket.send(json.dumps(self._backlash_state_payload()))
+            except Exception as e:
+                print(f"Failed to push backlash state on connect: {e}")
 
         try:
             async for message in websocket:
@@ -1075,6 +1227,58 @@ class WebSocketServer:
                         )
                     except Exception as e:
                         await self._send_pointing_state(websocket, ok=False, message=f"apply failed: {e}")
+                elif command == "calibrate_backlash":
+                    # Form: calibrate_backlash <cam_idx> [trials=5] [max_steps=512]
+                    #                          [settle_s=3.0] [engage_steps=150]
+                    #                          [min_features=20] [debug=0]
+                    #                          [probe_steps=20,40,60,80,100]
+                    if len(parts) < 2:
+                        await websocket.send("Error: calibrate_backlash requires cam_idx")
+                        continue
+                    probe_steps = None
+                    pitch_probe_steps = None
+                    try:
+                        cam_idx = int(parts[1])
+                        trials = int(parts[2]) if len(parts) > 2 else 5
+                        max_steps = int(parts[3]) if len(parts) > 3 else 512
+                        settle_s = float(parts[4]) if len(parts) > 4 else 3.0
+                        engage_steps = int(parts[5]) if len(parts) > 5 else 150
+                        min_features = int(float(parts[6])) if len(parts) > 6 else 20
+                        debug = bool(int(parts[7])) if len(parts) > 7 else False
+                        if len(parts) > 8 and parts[8].strip():
+                            probe_steps = [int(s.strip()) for s in parts[8].split(',')
+                                           if s.strip()]
+                        # Pitch probes are optional. The UI sends "_" as a
+                        # placeholder when the input is empty (otherwise the
+                        # space-split on the command line would drop the
+                        # positional slot). Treat anything without a digit
+                        # as "use yaw probe_steps for pitch too".
+                        if len(parts) > 9 and parts[9].strip() and any(c.isdigit() for c in parts[9]):
+                            pitch_probe_steps = [int(s.strip()) for s in parts[9].split(',')
+                                                 if s.strip() and s.strip().isdigit()]
+                    except ValueError as e:
+                        await websocket.send(f"Error: calibrate_backlash bad arg: {e}")
+                        continue
+                    asyncio.create_task(self._run_backlash(
+                        websocket, cam_idx, trials, max_steps,
+                        settle_s, engage_steps, min_features, debug,
+                        probe_steps, pitch_probe_steps,
+                    ))
+                elif command == "get_backlash_calibration":
+                    await websocket.send(json.dumps(self._backlash_state_payload()))
+                elif command == "cancel_backlash_calibration":
+                    with self._backlash_lock:
+                        cal = self._backlash_calibrator
+                    if cal is None:
+                        await websocket.send(json.dumps({
+                            'type': 'backlash_cancel_ack', 'ok': False,
+                            'message': 'no calibration running',
+                        }))
+                    else:
+                        cal.cancel_event.set()
+                        await websocket.send(json.dumps({
+                            'type': 'backlash_cancel_ack', 'ok': True,
+                        }))
                 elif command == "shutdown":
                     # Handle shutdown command (no parameters needed)
                     await websocket.send("Shutting down server...")
