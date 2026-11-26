@@ -818,7 +818,10 @@ class WebSocketServer:
                            "(send no backlash compensation)",
                "travel_limits": "travel_limits_abs_deg are absolute encoder-frame degrees (rig_limits.json), "
                                 "not counter steps; moves are clamped and vel brakes before them",
-               "vel_reversal_pause_needed": False}
+               "vel_reversal_pause_needed": False,
+               "move": "the 'move' command uses follower_move_* (UI pan/tilt buttons use move_*)",
+               "vel_arm": "'vel 0 0' while idle starts the vel loop and holds the motors ready (released "
+                          "after 2 s without vel), so the first real vel acts within one 5 ms cycle"}
         for ax, d in drivers.items():
             spd = float(getattr(d, "steps_per_deg", 0) or 0)
             a = {"steps_per_deg": spd,
@@ -826,11 +829,15 @@ class WebSocketServer:
                  "move_max_sps": round(getattr(d, "max_dps", 0.0) * spd),
                  "move_accel_dps2": getattr(d, "accel", None),
                  "move_tolerance_deg": getattr(d, "tol", None),
+                 "follower_move_max_dps": None, "follower_move_accel_dps2": None,
                  "nudge_max_steps": None,
                  "travel_limits_abs_deg": list(d.travel_limits) if getattr(d, "travel_limits", None) else None}
             try:
                 import TMC2209Driver as _td
                 a["nudge_max_steps"] = int(_td.NUDGE_MAX_DEG * spd)
+                a["follower_move_max_dps"] = _td.FOLLOWER_MOVE["max_dps"]
+                a["follower_move_max_sps"] = round(_td.FOLLOWER_MOVE["max_dps"] * spd)
+                a["follower_move_accel_dps2"] = _td.FOLLOWER_MOVE["accel_dps2"]
             except Exception:
                 pass
             if tr is not None:
@@ -1510,9 +1517,11 @@ class WebSocketServer:
                     pan_arg = int(parts[1])
                     tilt_arg = int(parts[2])
 
-                    # Cancel any ongoing movements and start new ones (queued in order; no wait)
-                    await self.cancel_and_start_pan(pan_arg, wait=False)
-                    await self.cancel_and_start_tilt(tilt_arg, wait=False)
+                    # Cancel any ongoing movements and start new ones (queued in order; no wait).
+                    # "move" is the follower's command: faster profile (FOLLOWER_MOVE).
+                    prof = self._follower_profile()
+                    await self.cancel_and_start_pan(pan_arg, wait=False, profile=prof)
+                    await self.cancel_and_start_tilt(tilt_arg, wait=False, profile=prof)
                 elif command == "vel":
                     # vel <pan_sps> <tilt_sps> [timeout_s] -- follower velocity mode; no reply (fast path)
                     try:
@@ -1539,7 +1548,7 @@ class WebSocketServer:
                         self._vel_pending = (vp, vt, tmo)
                         if self.tracker.running:
                             self.tracker.command_vel(vp, vt, tmo)
-                        elif (vp or vt) and not self._vel_starting:
+                        elif not self._vel_starting:          # any vel starts the loop; "vel 0 0" just arms it
                             self._vel_starting = True
                             asyncio.get_running_loop().run_in_executor(
                                 self._motion_exec, self._vel_job, websocket,
@@ -1654,9 +1663,10 @@ class WebSocketServer:
                         pan_arg = int(parts[1])
                         tilt_arg = int(parts[2])
                         
-                        # Cancel any ongoing movements and start new ones
-                        await self.cancel_and_start_pan(pan_arg, wait=False)
-                        await self.cancel_and_start_tilt(tilt_arg, wait=False)
+                        # Cancel any ongoing movements and start new ones (follower profile)
+                        prof = self._follower_profile()
+                        await self.cancel_and_start_pan(pan_arg, wait=False, profile=prof)
+                        await self.cancel_and_start_tilt(tilt_arg, wait=False, profile=prof)
                     else:
                         await websocket.send(f"Unknown command: {command}")
         except websockets.exceptions.ConnectionClosed:
@@ -1699,7 +1709,7 @@ class WebSocketServer:
                 result[name] = f"error: {e!r} - cut motor power"
         return {"ok": all(v == "stopped" for v in result.values()), **result}
 
-    def _start_axis_sync(self, axis, steps, stop_gen):
+    def _start_axis_sync(self, axis, steps, stop_gen, profile=None):
         """Worker thread: end a vel session, cancel the axis's running move, start the new one."""
         if stop_gen != self._stop_gen:
             return                                   # STOP arrived after this move was queued
@@ -1715,25 +1725,36 @@ class WebSocketServer:
                 cur.join(timeout=0.1)
             if int(steps) == 0:
                 return
-            th = threading.Thread(target=mc.step_to, args=(steps,), daemon=True)
+            if profile is not None and hasattr(mc.driver, "addr"):     # TMC2209: per-move profile
+                th = threading.Thread(target=mc.driver.step_to, args=(steps, profile), daemon=True)
+            else:
+                th = threading.Thread(target=mc.step_to, args=(steps,), daemon=True)
             setattr(self, attr, th)
             th.start()
 
-    async def _start_axis(self, axis, steps, wait=True):
+    async def _start_axis(self, axis, steps, wait=True, profile=None):
         fut = asyncio.get_running_loop().run_in_executor(
-            self._motion_exec, self._start_axis_sync, axis, steps, self._stop_gen)
+            self._motion_exec, self._start_axis_sync, axis, steps, self._stop_gen, profile)
         if wait:
             await fut
         else:
             fut.add_done_callback(lambda f: f.exception() and print(f"move {axis} {steps}: {f.exception()!r}"))
 
-    async def cancel_and_start_pan(self, steps, wait=True):
+    async def cancel_and_start_pan(self, steps, wait=True, profile=None):
         """Cancel ongoing pan movement and start new one (wait=True: returns once it has started)."""
-        await self._start_axis("pan", steps, wait)
+        await self._start_axis("pan", steps, wait, profile)
 
-    async def cancel_and_start_tilt(self, steps, wait=True):
+    async def cancel_and_start_tilt(self, steps, wait=True, profile=None):
         """Cancel ongoing tilt movement and start new one."""
-        await self._start_axis("tilt", steps, wait)
+        await self._start_axis("tilt", steps, wait, profile)
+
+    @staticmethod
+    def _follower_profile():
+        try:
+            import TMC2209Driver as _td
+            return dict(_td.FOLLOWER_MOVE)
+        except Exception:
+            return None
 
     def _vel_job(self, websocket, loop, stop_gen):
         """Worker thread: start the tracker in vel mode, then apply the newest pending vel."""

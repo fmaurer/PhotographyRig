@@ -63,6 +63,10 @@ RESEND_S = 0.2                 # re-send unchanged VACTUAL this often (unverifie
 LOOP_DT = 0.005
 NUDGE_MAX_DEG = 0.12           # moves at or below this (pan 257 / tilt 97 steps) may run open loop
 NUDGE_DPS = 0.25               # open-loop nudge speed at the output
+# Faster closed-loop profile for the follower's "move" (UI pan/tilt keep max_dps/accel):
+# crosses the pan gear gap and slews ~3.4x faster than the 2.9 deg/s UI speed.
+BRAKE_FRAC = 0.6
+FOLLOWER_MOVE = {"max_dps": 10.0, "accel_dps2": 40.0, "kp": 8.0}
 
 
 class MoveError(RuntimeError):
@@ -168,8 +172,9 @@ class TMC2209Driver(MotorDriver):
         self.step_to(self.num_steps_for_angle(degrees))
         return 0
 
-    def step_to(self, number):
-        """Relative move of `number` signed steps (name is historical)."""
+    def step_to(self, number, profile=None):
+        """Relative move of `number` signed steps (name is historical).
+        profile: optional {"max_dps", "accel_dps2", "kp"} for this move only."""
         number = int(number)
         if number == 0:
             return
@@ -181,7 +186,7 @@ class TMC2209Driver(MotorDriver):
                 if abs(deg) <= NUDGE_MAX_DEG and self.last_dir and (deg > 0) == (self.last_dir > 0):
                     self._nudge(number, gen)
                 else:
-                    self._move(number, gen)
+                    self._move(number, gen, profile)
                 self.last_error = None
             except Exception as e:
                 self.last_error = str(e)
@@ -229,7 +234,7 @@ class TMC2209Driver(MotorDriver):
             if not self.bus.w(self.addr, tu.REG_IHOLD_IRUN, (cs // 2) | (cs << 8) | (6 << 16)):
                 raise MoveError("current write not acknowledged")
 
-    def _move(self, number, gen):
+    def _move(self, number, gen, profile=None):
         if self.owner:
             raise MoveError(f"{self.owner} is driving {self.axis}; send track_stop first")
         number = self._clamp_steps(number)
@@ -265,9 +270,12 @@ class TMC2209Driver(MotorDriver):
         self.target_steps = int(round((start - self._zero_deg) * self.steps_per_deg * self.step_sign)) + \
             int(round(self.step_sign * deg * self.steps_per_deg))
         self.last_move_kind = "move"
-        vmax = max(self.max_dps, self.min_dps)
-        acc_v = abs(tu.out_dps_to_vactual(self.axis, self.accel))   # VACTUAL units per second
-        timeout = abs(deg) / vmax * 2.0 + 3.0 + vmax / self.accel
+        prof = profile or {}
+        vmax = max(min(float(prof.get("max_dps", self.max_dps)), MAX_DPS), self.min_dps)
+        accel = float(prof.get("accel_dps2", self.accel))
+        kp = float(prof.get("kp", self.kp))
+        acc_v = abs(tu.out_dps_to_vactual(self.axis, accel))        # VACTUAL units per second
+        timeout = abs(deg) / vmax * 2.0 + 3.0 + vmax / accel
         travel_lim = abs(deg) + TRAVEL_MARGIN_DEG
         follow_slack = LASH_DEG[self.axis] + FOLLOW_SLACK_DEG
 
@@ -315,12 +323,16 @@ class TMC2209Driver(MotorDriver):
                         raise MoveError(f"encoder reading stuck at {p:.2f} deg while commanded "
                                         f"{cmd_travel - cmd_at_change:+.2f} deg")
                     err = target - p
-                    if abs(err) < 0.3:               # near the target: decide on a longer average (encoder noise ~1 count)
+                    # Near the target and slow: decide on a longer average (encoder noise ~1 count).
+                    # Not while fast: a 75 ms average lags the shaft (0.2 deg at 3 deg/s) and brakes late.
+                    if abs(err) < 0.3 and abs(tu.vactual_to_out_dps(self.axis, self._cur)) < 1.0:
                         pa = self._pos(n=15)
                         err = target - (p if pa is None else pa)
                     if abs(err) <= self.tol or err * deg < 0:
                         break                # there, or just past it
-                    dps = min(vmax, math.sqrt(2.0 * self.accel * abs(err)), self.kp * abs(err))
+                    # Brake on 60% of accel: the ramp can then follow the curve despite
+                    # encoder lag (planning at 100% overshot 0.28 deg at 10 deg/s in sim).
+                    dps = min(vmax, math.sqrt(2.0 * BRAKE_FRAC * accel * abs(err)), kp * abs(err))
                     want = tu.out_dps_to_vactual(self.axis, math.copysign(max(self.min_dps, dps), err))
                 if now - last_health >= HEALTH_EVERY_S:
                     last_health = now
@@ -340,12 +352,15 @@ class TMC2209Driver(MotorDriver):
                     self.last_dir = 1 if tu.vactual_to_out_dps(self.axis, x) > 0 else -1
                 time.sleep(LOOP_DT)
             # decelerate to a stop at the same acceleration
+            t_r = time.monotonic()
             while self._cur != 0:
                 if self._estop:
                     raise MoveError("stopped by STOP command")
-                step = acc_v * 0.01
+                now_r = time.monotonic()
+                step = acc_v * max(now_r - t_r, 0.005)     # by elapsed time (each write takes a few ms)
+                t_r = now_r
                 self._send(self._cur - max(-step, min(step, self._cur)))
-                time.sleep(0.01)
+                time.sleep(0.005)
             time.sleep(0.1)
             p = self._pos(n=15)
             self.last_miss_deg = None if p is None else round(target - p, 3)

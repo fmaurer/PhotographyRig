@@ -156,5 +156,23 @@ check("move: first VACTUAL within 0.1 s of the command (sim UART)", all(x is not
 print("      move: first encoder count change after (ms): " + ", ".join(f"{x * 1000:.0f}" for x in lat_c if x))
 plant.stop = True
 
+# 12. follower move profile vs the UI profile: time and landing (true shaft), 2 deg pan, with a 1.2 deg gap
+def timed(drv, plant, n, profile):
+    a = plant.out["pan"]; t0 = time.monotonic()
+    drv.step_to(n, profile) if profile else drv.step_to(n)
+    return time.monotonic() - t0, plant.out["pan"] - a
+
+for lash in (0.0, 1.2):
+    fake, bus, enc, plant, pan, tilt, tr = setup(lash={"pan": lash, "tilt": 0.0})
+    pan.step_to(2146); time.sleep(0.2)                       # take up the gap toward encoder - first
+    tu_ui, d_ui = timed(pan, plant, -4292, None)             # reversal, UI profile: encoder +2 deg
+    time.sleep(0.2); pan.step_to(4292); time.sleep(0.2)
+    tu_f, d_f = timed(pan, plant, -4292, TD.FOLLOWER_MOVE)
+    check(f"follower move faster than UI move (2 deg reversal, gap {lash})", tu_f < 0.6 * tu_ui,
+          f"UI {tu_ui:.2f} s -> follower {tu_f:.2f} s")
+    check(f"follower move lands within 0.1 deg (gap {lash})", abs(d_f - 2.0) <= 0.1,
+          f"moved {d_f:+.3f} (UI {d_ui:+.3f}) peak {plant.peak_speed['pan']:.1f} deg/s")
+    plant.stop = True
+
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")
 sys.exit(0 if all(ok for _, ok in results) else 1)
