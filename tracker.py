@@ -55,12 +55,16 @@ class Tracker:
         "deadband": 0.05,       # deg: no correction inside this (~half an encoder count)
         "latency_ms": 0.0,      # age of the frame an error was measured in, when it arrives
         "watchdog_s": 0.3,      # no command for this long -> stop moving (hold)
-        "lash_pan": 1.2,        # deg of output-equivalent motor travel to cross the gap on reversal
+        "lash_pan": 1.8,        # deg of output-equivalent motor travel to cross the gap on reversal
         "lash_tilt": 0.05,
         "lash_comp": 0.8,       # fraction of the gap crossed with the boost
-        "boost_dps": 0.0,       # extra speed while crossing the gap on a reversal. OFF: in simulation
-                                # it made tracking worse (the loop already speeds up as the error
-                                # grows); kept for tuning against the real pan lash.
+        "boost_dps": 6.0,       # extra speed while crossing the gap on a reversal (0 = off).
+                                # Live, pan +-1 deg sine, 3 runs each: RMS 0.250 vs 0.325 deg off,
+                                # max 0.46-0.63 vs 0.76-0.83; still-target hold 0.09-0.12 vs 0.00.
+                                # Only when the TARGET is moving the new way (see boost_min_ff):
+                                # boosting on small corrections around a still target made the rig
+                                # hunt with growing swings (live 2026-11-25).
+        "boost_min_ff": 0.3,    # deg/s: boost only if the velocity feedforward is at least this, same sign
         "auto_ff": 1.0,         # 1: estimate object velocity when the command carries none
         "ff_g": 0.5,            # alpha-beta filter gains for that estimate (position, velocity)
         "ff_h": 0.2,            # (swept in sim: 0.5/0.2 best, robust to 0.02 deg detector noise)
@@ -281,6 +285,7 @@ class Tracker:
                         raise TrackFault(f"{ax} encoder reading stuck while commanded "
                                          f"{cmd_since_change[ax]:.2f} deg")
                     c = cmds.get(ax)
+                    vff = 0.0
                     if self._stop or watchdog or c is None:
                         v = 0.0
                         e = None
@@ -312,7 +317,8 @@ class Tracker:
                             since_rev[ax] = 0.0
                         last_dir[ax] = d
                     gap = cfg[f"lash_{ax}"] * cfg["lash_comp"]
-                    if d and since_rev[ax] < gap:
+                    if (d and since_rev[ax] < gap and cfg["boost_dps"] > 0
+                            and abs(vff) >= cfg["boost_min_ff"] and (vff > 0) == (d > 0)):
                         v = max(-vmax - cfg["boost_dps"], min(vmax + cfg["boost_dps"], v + d * cfg["boost_dps"]))
                     want[ax] = v
                     self.state[ax] = {"pos": round(p, 3), "err": None if e is None else round(e, 3),

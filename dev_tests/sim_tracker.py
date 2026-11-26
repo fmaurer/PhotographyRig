@@ -21,6 +21,8 @@ def setup(**kw):
     pan.step_sign = tilt.step_sign = -1          # as on the rig
     tr = Tracker({"pan": pan, "tilt": tilt})
     tr.configure(latency_ms=LAT * 1000)
+    if not kw.get("lash"):                       # match the tracker's lash settings to the simulated gears
+        tr.configure(boost_dps=0)
     return fake, bus, enc, plant, pan, tilt, tr
 
 
@@ -114,13 +116,36 @@ plant.stop = True
 res = {}
 for boost in (8.0, 0.0):
     fake, bus, enc, plant, pan, tilt, tr = setup(lash={"pan": 1.2, "tilt": 0.05}, slip={"pan": 0.9, "tilt": 0.9})
-    tr.configure(boost_dps=boost); tr.start()
+    tr.configure(boost_dps=boost, lash_pan=1.2); tr.start()
     s = start_pos(plant)
     obj = lambda t, s=s: {"pan": s["pan"] + 3 * math.sin(2 * math.pi * 0.2 * t), "tilt": s["tilt"]}
     pc = PC(tr, plant, obj); pc.start(); time.sleep(10.0); pc.stop = True
     res[boost] = pc.rms(2.5); tr.stop(); plant.stop = True
-check("lash 1.2 deg + slip 0.9: tracks with defaults (boost off), RMS < 0.3", res[0.0] < 0.3,
-      f"RMS boost off {res[0.0]:.3f}, boost 8 deg/s {res[8.0]:.3f} (informational)")
+check("lash 1.2 deg + slip 0.9: tracks, RMS < 0.3 (boost off and on)", res[0.0] < 0.3 and res[8.0] < 0.3,
+      f"RMS boost off {res[0.0]:.3f}, boost 8 deg/s {res[8.0]:.3f}")
+
+# 6b. measured pan lash (~2 deg): boost must not make a still target hunt, and should help a moving one
+def lash_run(boost, obj_fn, secs, noise=0.02):
+    fake, bus, enc, plant, pan, tilt, tr = setup(lash={"pan": 2.0, "tilt": 0.05}, slip={"pan": 0.92, "tilt": 0.9})
+    tr.configure(boost_dps=boost, lash_pan=1.8); tr.start(); time.sleep(0.2)
+    s = start_pos(plant)
+    pc = PC(tr, plant, lambda t, s=s: obj_fn(t, s), ff="auto", noise=noise); pc.start(); time.sleep(secs); pc.stop = True
+    out = pc
+    tr.request_estop(); bus.zero_now(); tr.thread.join(2); plant.stop = True
+    return out
+for boost in (0.0, 6.0):
+    pc = lash_run(boost, lambda t, s: {"pan": s["pan"] + (1.0 if t > 0.5 else 0.0), "tilt": s["tilt"]}, 7.0)
+    late = [abs(p) for t, p, ti in pc.log if t > 4.0]
+    check(f"still target, 2 deg lash, boost {boost:g}: no hunting (max |err| after 4 s < 0.25)", max(late) < 0.25,
+          f"max {max(late):.3f} deg")
+r = {}
+for boost in (0.0, 6.0):
+    pc = lash_run(boost, lambda t, s: {"pan": s["pan"] + math.sin(2 * math.pi * 0.25 * t), "tilt": s["tilt"]}, 9.0)
+    r[boost] = pc.rms(2.0)
+# The sim's dead-band lash doesn't show the benefit the rig does (live: 0.250 vs 0.325 RMS); only
+# guard against the boost making things clearly worse here.
+check("sine, 2 deg lash: boost not clearly worse in sim (< 1.3x)", r[6.0] < 1.3 * r[0.0],
+      f"RMS boost {r[6.0]:.3f} vs off {r[0.0]:.3f} (rig: boost better)")
 
 # 7. STOP during tracking
 fake, bus, enc, plant, pan, tilt, tr = setup()
