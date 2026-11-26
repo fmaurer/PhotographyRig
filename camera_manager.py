@@ -108,13 +108,21 @@ class _CameraStream:
 
     def _build_controls(self, settings: dict) -> dict:
         controls = {
-            "ExposureTime": int(settings["ExposureTime"]),
-            "AnalogueGain": float(settings["AnalogueGain"]),
             "AeEnable": bool(settings["AeEnable"]),
             # Lower latency: 50 fps (20 ms frames) works in the IMX477 2028x1080
             # mode used here. Exposure can't exceed the frame time.
             "FrameRate": float(settings.get("FrameRate", 30.0)),
         }
+        if settings["AeEnable"]:
+            # Don't send the saved shutter/gain with AE on: picamera2 turns any
+            # non-zero ExposureTime / AnalogueGain into ExposureTimeMode /
+            # AnalogueGainMode = manual, which silently disabled AE on every
+            # (re)configure. Send the AE bias instead.
+            if settings.get("ExposureValue") is not None:
+                controls["ExposureValue"] = float(settings["ExposureValue"])
+        else:
+            controls["ExposureTime"] = int(settings["ExposureTime"])
+            controls["AnalogueGain"] = float(settings["AnalogueGain"])
         if settings.get("AwbEnable") is not None:
             controls["AwbEnable"] = bool(settings["AwbEnable"])
         awb_mode = settings.get("AwbMode")
@@ -324,11 +332,24 @@ class _CameraStream:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             settings = camera_settings.load(self.cam_idx)
             size = tuple(settings.get("StillSize") or (4056, 3040))
+            # With AE / AWB on, take the photo at what they have settled on in the
+            # stream (UI EV included), so it looks like the live view and needs
+            # no settle frames. Read before stopping the stream.
+            meta = self.picam2.capture_metadata() if (settings["AeEnable"] or settings.get("AwbEnable")) else {}
             t0 = time.monotonic()
             self.picam2.stop_recording()
             try:
                 ctrls = self._build_controls(settings)
                 ctrls.pop("FrameRate", None)                 # full-res mode runs slower; let exposure decide
+                ctrls.pop("ExposureValue", None)
+                if settings["AeEnable"] and meta.get("ExposureTime"):
+                    ctrls["AeEnable"] = False
+                    ctrls["ExposureTime"] = int(meta["ExposureTime"])
+                    ctrls["AnalogueGain"] = float(meta["AnalogueGain"]) * float(meta.get("DigitalGain", 1.0))
+                if settings.get("AwbEnable") and meta.get("ColourGains"):
+                    ctrls["AwbEnable"] = False
+                    ctrls.pop("AwbMode", None)
+                    ctrls["ColourGains"] = tuple(meta["ColourGains"])
                 if "LensPosition" in ctrls and "LensPosition" not in self.picam2.camera_controls:
                     ctrls.pop("LensPosition")
                     ctrls.pop("AfMode", None)
@@ -340,10 +361,18 @@ class _CameraStream:
                 )
                 self.picam2.configure(still)
                 self.picam2.start()
-                if ctrls.get("AeEnable"):
-                    for _ in range(3):                       # let auto exposure settle on the new mode
-                        self.picam2.capture_array("main")
-                frame = self.picam2.capture_array("main")
+                # Fixed controls apply from the first frames; take the first frame
+                # whose metadata shows them (normally the first or second).
+                want = ctrls.get("ExposureTime")
+                for _ in range(6):
+                    req = self.picam2.capture_request()
+                    try:
+                        frame = req.make_array("main")
+                        got = req.get_metadata().get("ExposureTime")
+                    finally:
+                        req.release()
+                    if not want or (got and abs(got - want) <= 0.05 * want + 50):
+                        break
             finally:
                 try:
                     self.picam2.stop()
