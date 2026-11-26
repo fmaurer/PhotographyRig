@@ -311,6 +311,50 @@ class _CameraStream:
             raise RuntimeError(f"could not write {path}")
         return path
 
+    def capture_still_full(self, path: str) -> dict:
+        """Full sensor resolution (StillSize, 4056x3040 on the IMX477) JPEG.
+        The video mode can't deliver that, so this PAUSES the stream: stop the
+        encoder, switch to a still configuration, grab one frame, then restart
+        the stream (MediaMTX sees the publisher drop and come back; WebRTC
+        viewers reconnect). The stream is restored even if the capture fails.
+        Returns {"path", "size", "pause_ms"}."""
+        with self.lock:
+            if self.picam2 is None:
+                raise RuntimeError(f"cam{self.cam_idx} is not streaming")
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            settings = camera_settings.load(self.cam_idx)
+            size = tuple(settings.get("StillSize") or (4056, 3040))
+            t0 = time.monotonic()
+            self.picam2.stop_recording()
+            try:
+                ctrls = self._build_controls(settings)
+                ctrls.pop("FrameRate", None)                 # full-res mode runs slower; let exposure decide
+                if "LensPosition" in ctrls and "LensPosition" not in self.picam2.camera_controls:
+                    ctrls.pop("LensPosition")
+                    ctrls.pop("AfMode", None)
+                still = self.picam2.create_still_configuration(
+                    main={"size": size, "format": "RGB888"},   # RGB888 = BGR byte order, as OpenCV wants
+                    controls=ctrls,
+                    transform=Transform(hflip=int(settings["Transform"]["hflip"]),
+                                        vflip=int(settings["Transform"]["vflip"])),
+                )
+                self.picam2.configure(still)
+                self.picam2.start()
+                if ctrls.get("AeEnable"):
+                    for _ in range(3):                       # let auto exposure settle on the new mode
+                        self.picam2.capture_array("main")
+                frame = self.picam2.capture_array("main")
+            finally:
+                try:
+                    self.picam2.stop()
+                except Exception:
+                    pass
+                self._configure_and_record(settings)        # stream back, whatever happened
+            pause_ms = round((time.monotonic() - t0) * 1000)
+        if not cv2.imwrite(path, frame, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+            raise RuntimeError(f"could not write {path}")
+        return {"path": path, "size": [int(frame.shape[1]), int(frame.shape[0])], "pause_ms": pause_ms}
+
     def capture_array(self, *, color: str = "gray") -> np.ndarray:
         """Capture a single frame as a numpy array without interrupting the stream.
 
@@ -428,6 +472,12 @@ class CameraManager:
 
     def capture_still(self, cam_idx: int, path: str) -> str:
         return self._stream(cam_idx).capture_still(path)
+
+    def capture_still_full(self, cam_idx: int, path: str) -> dict:
+        """Full-resolution still; pauses that camera's stream (see _CameraStream)."""
+        if self.is_recording():
+            raise RuntimeError("recording in progress: a full-res photo would cut the recording; stop it first")
+        return self._stream(cam_idx).capture_still_full(path)
 
     def capture_array(self, cam_idx: int, *, color: str = "gray") -> np.ndarray:
         return self._stream(cam_idx).capture_array(color=color)

@@ -1463,6 +1463,13 @@ class WebSocketServer:
                             print(f"{command}: running={st['running']} fault={st['fault']}", flush=True)
                     except Exception as e:
                         await websocket.send(json.dumps({"type": command, "ok": False, "message": str(e)}))
+                elif command == "capture_full":
+                    # capture_full <cam>: full-resolution still (pauses that camera's stream briefly)
+                    try:
+                        cam = int(parts[1]) if len(parts) > 1 else 0
+                    except ValueError:
+                        cam = 0
+                    self._spawn(self._capture_and_reply(websocket, cam, full=True))
                 elif command == "stop":
                     # STOP button: cut both motors immediately (no ramp), then confirm.
                     result = await asyncio.to_thread(self.stop_all_motors)
@@ -1483,7 +1490,7 @@ class WebSocketServer:
                         # Cancel any ongoing tilt movement and start new one
                         await self.cancel_and_start_tilt(argument)
                     elif command == "capture":
-                        self.trigger_camera(argument)
+                        self._spawn(self._capture_and_reply(websocket, argument, full=False))
                     elif command == "shutter":
                         # shutter <us>  — applies to BOTH cameras for backwards compat
                         if self.camera_manager is None:
@@ -1642,6 +1649,25 @@ class WebSocketServer:
         # Use os._exit() instead of sys.exit() to avoid asyncio issues
         os._exit(0)
 
+    def _spawn(self, coro):
+        """Run a slow command as its own task so this connection keeps reading
+        messages (a STOP from the same page must not wait for a photo)."""
+        task = asyncio.create_task(coro)
+        tasks = self.__dict__.setdefault("_bg_tasks", set())
+        tasks.add(task)                               # keep a reference until done
+        task.add_done_callback(tasks.discard)
+        return task
+
+    async def _capture_and_reply(self, websocket, cam, full):
+        """Capture in a worker thread (the event loop, and so STOP, never waits on the camera)."""
+        try:
+            info = await asyncio.to_thread(self.trigger_camera, cam, full)
+            await websocket.send(json.dumps({"type": "photo_saved", "ok": True, **info}))
+        except Exception as e:
+            print(f"capture failed (cam{cam}, full={full}): {e!r}", flush=True)
+            await websocket.send(json.dumps({"type": "photo_saved", "ok": False, "cam": cam, "full": full,
+                                             "message": str(e)}))
+
     async def _broadcast(self, text):
         for client in list(self.connected_clients):
             try:
@@ -1716,30 +1742,31 @@ class WebSocketServer:
         
         asyncio.run(start())
     
-    def trigger_camera(self, idx):
-        """Capture a still while the stream keeps running (no MediaMTX restart)."""
+    def trigger_camera(self, idx, full=False):
+        """Capture a still. full=False: from the running stream (fast, stream
+        size). full=True: full sensor resolution, pauses the stream briefly.
+        Blocking -- call it from a worker thread. Returns a dict for the UI."""
         if self.camera_manager is None:
-            print("trigger_camera: no CameraManager — capture unavailable")
-            return
-
+            raise RuntimeError("no CameraManager: capture unavailable")
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        file_name = f'cam{idx}_{timestamp}.jpg'
+        file_name = f'cam{idx}_{timestamp}{"_full" if full else ""}.jpg'
         file_path = f'./captures/{file_name}'
         symlink_path = f'./captures/cam{idx}_last.jpg'
-
-        try:
+        t0 = time.monotonic()
+        if full:
+            info = self.camera_manager.capture_still_full(idx, file_path)
+        else:
             self.camera_manager.capture_still(idx, file_path)
-        except Exception as e:
-            print(f"trigger_camera({idx}): capture failed: {e!r}")
-            return
-
+            info = {"path": file_path, "pause_ms": 0}
         self.last_photo_path = file_path
         self.last_symlink_path = symlink_path
-
         if os.path.islink(symlink_path):
             os.remove(symlink_path)
         os.symlink(os.path.basename(file_path), symlink_path)
-        print(f"Photo saved to {file_path}")
+        info.update({"cam": idx, "full": full, "file": file_name, "ms": round((time.monotonic() - t0) * 1000)})
+        print(f"Photo saved to {file_path} ({'full res, stream paused ' + str(info['pause_ms']) + ' ms' if full else 'stream size'}, "
+              f"{info['ms']} ms)", flush=True)
+        return info
     
 
     def handle_shutdown(self, signum, frame):

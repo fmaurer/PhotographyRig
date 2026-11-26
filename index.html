@@ -375,7 +375,8 @@
         <!-- Camera Controls -->
         <div class="camera-controls">
             <h2>Camera 0 Controls</h2>
-            <button class="exposure-button" onclick="sendCommand('capture', 0)">Take Photo</button>
+            <button class="exposure-button" onclick="takePhoto(0)">Take Photo</button>
+            <label title="Full sensor resolution (4056x3040). Pauses the live stream for a moment." style="color: gray; margin-left: 6px; font-size: 13px; white-space: nowrap;"><input type="checkbox" id="fullres-cam0"> Full res (pauses stream)</label>
             <button class="exposure-button" onclick="refreshCapturedImage()">&#x21BA; Refresh Image</button>
             <button id="record-cam0" class="exposure-button recording-button" onclick="toggleRecording('cam0')" style="background-color: #4CAF50;">Start Recording</button>
 
@@ -407,7 +408,8 @@
 
         <div class="camera-controls">
             <h2>Camera 1 Controls</h2>
-            <button class="exposure-button" onclick="sendCommand('capture', 1)">Take Photo</button>
+            <button class="exposure-button" onclick="takePhoto(1)">Take Photo</button>
+            <label title="Full sensor resolution (4056x3040). Pauses the live stream for a moment." style="color: gray; margin-left: 6px; font-size: 13px; white-space: nowrap;"><input type="checkbox" id="fullres-cam1"> Full res (pauses stream)</label>
             <button id="record-cam1" class="exposure-button recording-button" onclick="toggleRecording('cam1')" style="background-color: #4CAF50;">Start Recording</button>
 
             <div class="exposure-controls" id="exposure-cam1">
@@ -1027,6 +1029,23 @@
                 // Try again after a longer delay
                 setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
             }
+        }
+
+        // Take Photo: stream-size (instant) or, with "Full res" ticked, full sensor
+        // resolution (the server pauses the stream for a moment). The server answers
+        // "photo_saved" when the file exists; the image refreshes then.
+        function takePhoto(cam) {
+            const box = document.getElementById('fullres-cam' + cam);
+            const full = box && box.checked;
+            if (!(socket && socket.readyState === WebSocket.OPEN)) { writeToConsole("WebSocket is not connected"); return; }
+            socket.send(full ? ("capture_full " + cam) : ("capture " + cam));
+            writeToConsole(full ? `Taking full-res photo on cam${cam} (stream pauses)...` : `Taking photo on cam${cam}...`);
+        }
+        function onPhotoSaved(msg) {
+            if (!msg.ok) { writeToConsole(`Photo failed (cam${msg.cam}${msg.full ? ', full res' : ''}): ${msg.message}`); return; }
+            const what = msg.full ? `full res ${msg.size ? msg.size.join('x') : ''}, stream paused ${msg.pause_ms} ms` : 'stream size';
+            writeToConsole(`Photo saved: ${msg.file} (${what}, ${msg.ms} ms)`);
+            refreshCapturedImage();
         }
 
         // Driver temperature / fault display. The TMC2209 only reports thresholds
@@ -2734,6 +2753,7 @@
             // Try to parse as JSON for structured messages
             try {
                 const msg = JSON.parse(response);
+                if (msg.type === 'photo_saved') { onPhotoSaved(msg); return; }
                 if (msg.type === 'driver_status') { renderDriverStatus(msg); return; }
                 if (msg.type === 'motor_alert') { showMotorAlert(msg); return; }
                 if (msg.type === 'imu_data' && msg.data) {
