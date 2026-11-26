@@ -3,3 +3,4 @@ __pycache__/
 captures/
 mediamtx/
 env/
+logs/

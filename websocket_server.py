@@ -11,9 +11,15 @@ import sys
 import threading
 import json
 import math
+import shutil
 
-# IMU imports
+# IMU imports. The BNO08x IMU lives on I2C bus 1, which on samwise is the
+# pan AS5600 encoder's bus and there is no IMU fitted, so probing it is opt-in:
+# set RIG_ENABLE_IMU=1 to try. Without it the IMU UI just shows no data.
+IMU_ENABLED = os.environ.get("RIG_ENABLE_IMU", "0") == "1"
 try:
+    if not IMU_ENABLED:
+        raise ImportError("IMU disabled (set RIG_ENABLE_IMU=1 to enable)")
     import board
     import busio
     from adafruit_bno08x import (
@@ -25,8 +31,8 @@ try:
     )
     from adafruit_bno08x.i2c import BNO08X_I2C
     IMU_AVAILABLE = True
-except ImportError:
-    print("IMU libraries not available. IMU functionality will be disabled.")
+except ImportError as e:
+    print(f"IMU unavailable ({e}). IMU functionality will be disabled.")
     IMU_AVAILABLE = False
 
 from pointing_calibration import PointingCalibration, earth_to_azel
@@ -44,6 +50,21 @@ from backlash_calibration import (
 # rewired.
 WIDE_CAM = 1
 ZOOM_CAM = 0
+
+
+# MediaMTX: config is generated into <repo>/mediamtx/mediamtx.yml. The binary is
+# taken from $MEDIAMTX_BIN, else <repo>/mediamtx/mediamtx, else `mediamtx` on PATH.
+MEDIAMTX_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mediamtx")
+
+
+def _find_mediamtx_binary():
+    for cand in (os.environ.get("MEDIAMTX_BIN"),
+                 os.path.join(MEDIAMTX_DIR, "mediamtx"),
+                 shutil.which("mediamtx"),
+                 os.path.expanduser("~/.local/bin/mediamtx")):
+        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
 
 
 # Commands that the UI polls at high frequency (~1 Hz) and that don't carry
@@ -165,9 +186,10 @@ class WebSocketServer:
 
     def setup_stream_configs(self):
         """Create a single config file for both cameras"""
-        mediamtx_dir = os.path.expanduser('./mediamtx')
-        config_path = os.path.join(mediamtx_dir, 'mediamtx.yml')
-        
+        os.makedirs(MEDIAMTX_DIR, exist_ok=True)
+        config_path = os.path.join(MEDIAMTX_DIR, 'mediamtx.yml')
+        mdns_name = f"{socket.gethostname()}.local"
+
         # Get the RPi's local IP address
         def get_local_ip():
             try:
@@ -196,6 +218,9 @@ class WebSocketServer:
             'hls': False,
             'api': False,
             'metrics': False,
+            'rtmp': False,
+            'srt': False,
+            'moq': False,
             
             # WebRTC configuration
             'webrtc': True,
@@ -213,11 +238,11 @@ class WebSocketServer:
             
             # Add all possible addresses that clients might use
             'webrtcAdditionalHosts': [
-                'frodo.local',
+                mdns_name,
                 'localhost',
                 '127.0.0.1',
                 local_ip  # Add the RPi's local IP
-            ] if local_ip else ['frodo.local', 'localhost', '127.0.0.1'],
+            ] if local_ip else [mdns_name, 'localhost', '127.0.0.1'],
             
             # Get IPs from network interfaces
             'webrtcIPsFromInterfaces': True,
@@ -228,11 +253,9 @@ class WebSocketServer:
             'paths': {
                 'cam0': {
                     'source': 'publisher',
-                    'sourceProtocol': 'tcp',
                 },
                 'cam1': {
                     'source': 'publisher',
-                    'sourceProtocol': 'tcp',
                 }
             }
         }
@@ -934,11 +957,14 @@ class WebSocketServer:
     def start_stream(self, camera_index=None):
         """Start a single MediaMTX instance for both cameras"""
         try:
-            mediamtx_dir = os.path.expanduser('./mediamtx')
-            config_file = 'mediamtx.yml'
-            stream_command = ['./mediamtx', config_file]
-            print("Starting MediaMTX server...")
-            return subprocess.Popen(stream_command, cwd=mediamtx_dir, shell=False)
+            binary = _find_mediamtx_binary()
+            if binary is None:
+                print("ERROR: mediamtx binary not found (set MEDIAMTX_BIN, put it in "
+                      f"{MEDIAMTX_DIR}/, or on PATH) — live preview will be unavailable.")
+                return None
+            stream_command = [binary, os.path.join(MEDIAMTX_DIR, 'mediamtx.yml')]
+            print(f"Starting MediaMTX server ({binary})...")
+            return subprocess.Popen(stream_command, cwd=MEDIAMTX_DIR, shell=False)
         except Exception as e:
             print(f"Error starting MediaMTX server: {str(e)}")
             return None
@@ -1405,9 +1431,11 @@ class WebSocketServer:
                             await websocket.send("Error: shutter unavailable (no CameraManager)")
                         else:
                             try:
-                                for cam in (0, 1):
+                                cams = self.camera_manager.streaming_indices()
+                                for cam in cams:
                                     self.camera_manager.set_exposure(cam, shutter_us=argument)
-                                await websocket.send(f"shutter set to {argument}us on cam0 and cam1")
+                                names = " and ".join(f"cam{c}" for c in cams) or "no cameras"
+                                await websocket.send(f"shutter set to {argument}us on {names}")
                             except Exception as e:
                                 await websocket.send(f"Error: shutter failed: {e!r}")
                     elif command == "move":  # New combined command
@@ -1567,11 +1595,26 @@ class WebSocketServer:
     def handle_shutdown(self, signum, frame):
         """Handle shutdown signals gracefully"""
         print("\nShutdown signal received, cleaning up...")
+        # Motors first: sys.exit() below escapes WebSocketServer.__init__, so
+        # main.py's own cleanup never runs. cleanup() stops any move and
+        # confirms VACTUAL=0 / current 0 (TMC2209) or EN high (TMC2208).
+        for mc in (self.motor_controller, self.motor_controller_tilt):
+            try:
+                print(f"shutdown: stopping motor {getattr(mc.driver, 'axis', '?')}", flush=True)
+                mc.driver.cleanup()
+            except Exception as e:
+                print(f"Error stopping motor: {e!r}")
+        print("shutdown: motors done, stopping cameras", flush=True)
         if self.camera_manager is not None:
             try:
                 self.camera_manager.stop_all()
             except Exception as e:
                 print(f"Error stopping CameraManager: {e!r}")
+        print("shutdown: cameras done, stopping MediaMTX", flush=True)
         self.stop_stream()
-        sys.exit(0)
+        # Motors, cameras and MediaMTX are stopped above, so exit hard:
+        # sys.exit() from a signal handler can be swallowed by the asyncio
+        # loop or held up by non-daemon move threads.
+        print("Shutdown complete.", flush=True)
+        os._exit(0)
 

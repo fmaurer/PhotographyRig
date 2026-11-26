@@ -117,14 +117,14 @@
 
     <!-- Streams -->
     <div id="stream-container">
-        <iframe src="http://frodo.local:8889/cam1/"></iframe>
+        <iframe src="about:blank" data-rig-src="8889/cam1/"></iframe>
         <div id="cam1-overlay"></div>
         <div id="red-zoom-indicator"></div>
         <div id="green-center-indicator"></div>
         <div id="last-capture-container">
-            <img id="last-capture" src="http://frodo.local:8000/captures/cam0_last.jpg">
+            <img id="last-capture" data-rig-src="8000/captures/cam0_last.jpg">
         </div>
-        <iframe src="http://frodo.local:8889/cam0/"></iframe>
+        <iframe src="about:blank" data-rig-src="8889/cam0/"></iframe>
     </div>
 
     <!-- Cam0: Photo / Refresh / Record -->
@@ -200,7 +200,13 @@
     // feature still works, just not all are surfaced.
     // ──────────────────────────────────────────────
 
-    var socket = new WebSocket("ws://frodo.local:8765");
+    // Rig host = whatever host served this page (samwise.local, an IP, ...).
+    // Falls back to samwise.local when opened from file://.
+    const RIG_HOST = window.location.hostname || "samwise.local";
+    document.querySelectorAll("[data-rig-src]").forEach(function (el) {
+        el.src = "http://" + RIG_HOST + ":" + el.dataset.rigSrc;
+    });
+    var socket = new WebSocket("ws://" + RIG_HOST + ":8765");
 
     function connect(socket){
         socket.onopen = function(event) { writeToConsole("Connection opened"); };
@@ -615,10 +621,10 @@
             try {
                 const ctrl = new AbortController();
                 setTimeout(() => ctrl.abort(), 1000);
-                const res = await fetch(`http://frodo.local:${port}/port-info`, { signal: ctrl.signal });
+                const res = await fetch(`http://${RIG_HOST}:${port}/port-info`, { signal: ctrl.signal });
                 if (res.ok) {
                     const data = await res.json();
-                    document.getElementById('last-capture').src = `http://frodo.local:${data.port}/captures/cam0_last.jpg`;
+                    document.getElementById('last-capture').src = `http://${RIG_HOST}:${data.port}/captures/cam0_last.jpg`;
                     writeToConsole(`HTTP server on port ${data.port}`);
                     return;
                 }

@@ -1,5 +1,7 @@
 #from L298NDriver import L298NDriver
 from TMC2208Driver import TMC2208Driver
+from TMC2209Driver import TMC2209Driver
+import tmc2209_uart
 from motor_controller import MotorController
 from astro_controller import AstroController
 from websocket_server import WebSocketServer
@@ -7,6 +9,8 @@ from camera_manager import CameraManager
 from astropy.coordinates import EarthLocation
 from astropy import units as u
 import threading
+import faulthandler
+faulthandler.register(10, all_threads=True)  # SIGUSR1: dump all thread stacks to stderr
 import http.server
 import socketserver
 import signal
@@ -59,8 +63,9 @@ def run_cleanup():
         current_dir = os.path.dirname(os.path.abspath(__file__))
         cleanup_script = os.path.join(current_dir, 'force_cleanup.py')
         
-        # Run the cleanup script with sudo
-        subprocess.run(['sudo', 'python3', cleanup_script], check=True)
+        # samwise: user is in the dialout/gpio groups and sudo needs a password,
+        # so run it directly (a sudo prompt here would hang the shutdown).
+        subprocess.run([sys.executable, cleanup_script], check=True, timeout=20)
     except Exception as e:
         print(f"Error running cleanup script: {e}")
 
@@ -150,12 +155,45 @@ def main():
     PAN_APPROACH = (0, 0)
     TILT_APPROACH = (0, 0)
 
-    tmc2208_driver = TMC2208Driver(STEP_PIN, DIR_PIN, ENABLE_PIN, PAN_STEP_DELAY,
-                                   soft_limits=PAN_SOFT_LIMITS,
-                                   approach_dir=PAN_APPROACH[0], approach_overshoot=PAN_APPROACH[1])
-    tmc2208_driver_2 = TMC2208Driver(STEP_PIN_TILT, DIR_PIN_TILT, ENABLE_PIN_TILT, TILT_STEP_DELAY,
-                                     soft_limits=TILT_SOFT_LIMITS,
-                                     approach_dir=TILT_APPROACH[0], approach_overshoot=TILT_APPROACH[1])
+    # Motor backend. samwise (current rig): TMC2209 over UART, closed loop on
+    # the AS5600 output encoders. frodo (old rig): TMC2208 STEP/DIR/EN GPIO.
+    # force_cleanup.py reads the same RIG_MOTORS variable.
+    MOTOR_BACKEND = os.environ.get("RIG_MOTORS", "tmc2209_uart")
+
+    if MOTOR_BACKEND == "tmc2209_uart":
+        # Steps are virtual units of 1/STEPS_PER_DEG output degrees (the values
+        # index.html's click-to-point assumes); the step delays above keep their
+        # meaning: pan 80 us -> 2.91 deg/s, tilt 350 us -> 1.77 deg/s.
+        PAN_STEPS_PER_DEG = 2146
+        TILT_STEPS_PER_DEG = 805
+        # -1: a positive step lowers the encoder angle. Set 2026-11-25 after the
+        # UI's up/down and left/right buttons were both inverted with +1.
+        PAN_STEP_SIGN = -1
+        TILT_STEP_SIGN = -1
+        motor_bus = tmc2209_uart.TMC2209Bus()
+        motor_bus.zero_now()                     # start from a known stopped state
+        # Backstop: zero both drivers on any interpreter exit (handle_shutdown
+        # in websocket_server.py also stops them, before the cameras).
+        import atexit
+        atexit.register(motor_bus.zero_now)
+        encoders = tmc2209_uart.AS5600Encoders()
+        tmc2208_driver = TMC2209Driver(motor_bus, encoders, "pan", PAN_STEP_DELAY, PAN_STEPS_PER_DEG,
+                                       current_ma=1000, step_sign=PAN_STEP_SIGN,
+                                       soft_limits=PAN_SOFT_LIMITS)
+        tmc2208_driver_2 = TMC2209Driver(motor_bus, encoders, "tilt", TILT_STEP_DELAY, TILT_STEPS_PER_DEG,
+                                         current_ma=1400, step_sign=TILT_STEP_SIGN,
+                                         soft_limits=TILT_SOFT_LIMITS)
+        print(f"Motors: TMC2209 UART, pan {tmc2208_driver.max_dps:.2f} deg/s, "
+              f"tilt {tmc2208_driver_2.max_dps:.2f} deg/s max")
+    elif MOTOR_BACKEND == "tmc2208_gpio":
+        tmc2208_driver = TMC2208Driver(STEP_PIN, DIR_PIN, ENABLE_PIN, PAN_STEP_DELAY,
+                                       soft_limits=PAN_SOFT_LIMITS,
+                                       approach_dir=PAN_APPROACH[0], approach_overshoot=PAN_APPROACH[1])
+        tmc2208_driver_2 = TMC2208Driver(STEP_PIN_TILT, DIR_PIN_TILT, ENABLE_PIN_TILT, TILT_STEP_DELAY,
+                                         soft_limits=TILT_SOFT_LIMITS,
+                                         approach_dir=TILT_APPROACH[0], approach_overshoot=TILT_APPROACH[1])
+    else:
+        sys.exit(f"Unknown RIG_MOTORS={MOTOR_BACKEND!r} (use tmc2209_uart or tmc2208_gpio)")
 
     # Initialize the motor controller with L298N driver
     pan_motor_controller = MotorController(tmc2208_driver)

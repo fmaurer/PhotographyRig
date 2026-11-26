@@ -1,19 +1,28 @@
-adafruit-blinka==8.66.2
-adafruit-circuitpython-bno08x==1.3.0
-astropy==7.1.0
-astropy-iers-data==0.2025.6.9.14.9.37
-colorzero==2.0
-gpiozero==2.0.1
-lgpio==0.2.2.0
-numpy==1.26.4
-# opencv-python is required for homography_calibration.py and camera_manager.capture_array.
-# It was already imported implicitly via record_camera.py; pinning here so installs are reproducible.
-# Install opencv-contrib-python instead if you want SIFT (better matches at high zoom ratios);
-# homography_calibration.py auto-detects and falls back to AKAZE otherwise.
-opencv-python>=4.8.0
-packaging==25.0
-pigpio==1.78
-pyerfa==2.0.1.5
-PyYAML==6.0.2
-RPi.GPIO==0.7.1
+# Install into a venv created WITH system site packages, so the apt-provided
+# picamera2 / libcamera / python3-av / numpy / gpiozero / pyserial are used:
+#   python3 -m venv --system-site-packages venv
+#   venv/bin/pip install -c <(echo "numpy==$(python3 -c 'import numpy;print(numpy.__version__)')") -r requirements.txt
+# The constraint stops pip from replacing the system numpy that picamera2 was
+# built against. On samwise (Pi 5, Pi OS trixie, Python 3.13) the system
+# numpy is 2.2.4.
+# Also needed, not from pip: MediaMTX (github.com/bluenviron/mediamtx, v1.21.4
+# linux_arm64) at ./mediamtx/mediamtx, $MEDIAMTX_BIN, or on PATH; ffmpeg.
+
 websockets==15.0.1
+PyYAML>=6.0
+astropy==7.1.0
+pyerfa==2.0.1.5
+# opencv: needed by camera_manager.capture_array, homography_calibration.py and
+# backlash_calibration.py. Headless build (no Qt). 5.x is untested here.
+# Install opencv-contrib-python-headless instead if you want SIFT variants;
+# homography_calibration.py auto-detects and falls back to AKAZE otherwise.
+opencv-python-headless>=4.8,<5
+
+# Optional, old rig (frodo) only — BNO08x IMU on I2C bus 1. On samwise there's
+# no IMU and bus 1 is the pan encoder; the server only probes the IMU when
+# RIG_ENABLE_IMU=1.
+#   adafruit-blinka==8.66.2
+#   adafruit-circuitpython-bno08x==1.3.0
+# Old rig GPIO backends (frodo, Pi 4). Pi 5 uses gpiozero+lgpio from apt.
+#   RPi.GPIO==0.7.1
+#   pigpio==1.78

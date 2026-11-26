@@ -2,11 +2,14 @@
 """Last-resort cleanup after main.py exits (main.py runs this with sudo).
 
 REBUILT 2026-11-25: the original was only on the lost SD card. This version:
-  1. disables both TMC2208 drivers (EN pins high) with `pinctrl`, which
-     works even if the GPIO lines are still claimed or the process crashed;
+  1. stops the motors. RIG_MOTORS=tmc2209_uart (samwise, default): sends
+     VACTUAL=0 and run current 0 to both TMC2209s over /dev/serial0, without
+     reading anything back, so it works even if the app crashed holding the
+     port. (EN is tied to GND on samwise; the UART is the only off switch.)
+     RIG_MOTORS=tmc2208_gpio (frodo): EN pins high with `pinctrl`;
   2. stops leftover camera / streaming processes;
   3. frees the rig's ports without killing the process that called us.
-Safe to run by hand at any time: `sudo python3 force_cleanup.py`.
+Safe to run by hand at any time: `python3 force_cleanup.py` (frodo: with sudo).
 """
 import os
 import shutil
@@ -19,7 +22,25 @@ PORTS = (8000, 8001, 8765, 8554, 8889)
 PROCS = ("rpicam-vid", "rpicam-still", "ffmpeg", "mediamtx")
 
 
+MOTOR_BACKEND = os.environ.get("RIG_MOTORS", "tmc2209_uart")
+
+
 def motors_off():
+    if MOTOR_BACKEND == "tmc2209_uart":
+        try:
+            import tmc2209_uart as tu
+            bus = tu.TMC2209Bus()
+            bus.zero_now(reps=5)
+            print("force_cleanup: TMC2209 VACTUAL=0 + current 0 sent to pan and tilt (unverified)")
+            try:
+                for name, addr in tu.ADDR.items():
+                    ok = bus.w(addr, tu.REG_VACTUAL, 0)
+                    print(f"force_cleanup: {name} stop {'confirmed' if ok else 'NOT confirmed -- CUT MOTOR POWER'}")
+            finally:
+                bus.ser.close()
+        except Exception as e:
+            print(f"force_cleanup: UART stop FAILED ({e}) -- CUT MOTOR POWER")
+        return
     if not shutil.which("pinctrl"):
         print("force_cleanup: pinctrl not found; cannot force EN pins high")
         return

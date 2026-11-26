@@ -81,6 +81,10 @@ class _CameraStream:
         self.lock = threading.Lock()  # serializes (re)configuration and capture
 
     @property
+    def is_streaming(self) -> bool:
+        return self.picam2 is not None
+
+    @property
     def rtsp_url(self) -> str:
         return f"rtsp://{self.rtsp_host}:8554/cam{self.cam_idx}"
 
@@ -110,37 +114,49 @@ class _CameraStream:
                 return
             settings = camera_settings.load(self.cam_idx)
             self.picam2 = Picamera2(camera_num=self.cam_idx)
-
-            initial_controls = self._build_controls(settings)
-            # Drop LensPosition if this camera doesn't expose it (e.g. HQ Cam fixed lens).
-            if "LensPosition" in initial_controls and "LensPosition" not in self.picam2.camera_controls:
-                initial_controls.pop("LensPosition")
-                initial_controls.pop("AfMode", None)
-
-            transform = Transform(
-                hflip=int(settings["Transform"]["hflip"]),
-                vflip=int(settings["Transform"]["vflip"]),
-            )
-            video_config = self.picam2.create_video_configuration(
-                main={"size": tuple(settings["StreamSize"]), "format": "YUV420"},
-                controls=initial_controls,
-                transform=transform,
-                queue=True,
-            )
-            self.picam2.configure(video_config)
-
             try:
-                self.encoder = H264Encoder(bitrate=self.bitrate, profile="baseline")
-            except TypeError:
-                self.encoder = H264Encoder(bitrate=self.bitrate)
-            self.output = FfmpegOutput(
-                f"-f rtsp -rtsp_transport tcp {self.rtsp_url}",
-                audio=False,
-            )
-            self.picam2.start_recording(self.encoder, self.output)
-            print(f"camera_manager: cam{self.cam_idx} streaming -> {self.rtsp_url} "
-                  f"({settings['StreamSize'][0]}x{settings['StreamSize'][1]} "
-                  f"@ {self.bitrate/1e6:.1f} Mbit/s)")
+                self._configure_and_record(settings)
+            except Exception:
+                try:
+                    self.picam2.close()
+                except Exception:
+                    pass
+                self.picam2 = None
+                self.encoder = None
+                self.output = None
+                raise
+
+    def _configure_and_record(self, settings: dict) -> None:
+        initial_controls = self._build_controls(settings)
+        # Drop LensPosition if this camera doesn't expose it (e.g. HQ Cam fixed lens).
+        if "LensPosition" in initial_controls and "LensPosition" not in self.picam2.camera_controls:
+            initial_controls.pop("LensPosition")
+            initial_controls.pop("AfMode", None)
+
+        transform = Transform(
+            hflip=int(settings["Transform"]["hflip"]),
+            vflip=int(settings["Transform"]["vflip"]),
+        )
+        video_config = self.picam2.create_video_configuration(
+            main={"size": tuple(settings["StreamSize"]), "format": "YUV420"},
+            controls=initial_controls,
+            transform=transform,
+            queue=True,
+        )
+        self.picam2.configure(video_config)
+
+        try:
+            self.encoder = H264Encoder(bitrate=self.bitrate, profile="baseline")
+        except TypeError:
+            self.encoder = H264Encoder(bitrate=self.bitrate)
+        self.output = FfmpegOutput(
+            f"-f rtsp -rtsp_transport tcp {self.rtsp_url}",
+            audio=False,
+        )
+        self.picam2.start_recording(self.encoder, self.output)
+        print(f"camera_manager: cam{self.cam_idx} streaming -> {self.rtsp_url} "
+              f"({settings['StreamSize'][0]}x{settings['StreamSize'][1]} "
+              f"@ {self.bitrate/1e6:.1f} Mbit/s)")
 
     def stop(self) -> None:
         with self.lock:
@@ -325,12 +341,29 @@ class CameraManager:
         self.recording_procs: dict = {}
         self.recording_lock = threading.Lock()
 
+    @staticmethod
+    def detected_camera_count() -> Optional[int]:
+        """Number of cameras libcamera sees, or None if it can't be queried."""
+        try:
+            return len(Picamera2.global_camera_info())
+        except Exception as e:
+            print(f"camera_manager: could not enumerate cameras: {e!r}")
+            return None
+
     def start_all(self) -> None:
+        n = self.detected_camera_count()
         for idx in self.CAMERA_INDICES:
+            if n is not None and idx >= n:
+                print(f"camera_manager: cam{idx} not detected ({n} camera(s) attached), skipping")
+                continue
             try:
                 self.streams[idx].start()
             except Exception as e:
                 print(f"camera_manager: failed to start cam{idx}: {e!r}")
+
+    def streaming_indices(self) -> list:
+        """Indices of cameras that are currently streaming."""
+        return [idx for idx in self.CAMERA_INDICES if self.streams[idx].is_streaming]
 
     def stop_all(self) -> None:
         for idx in self.CAMERA_INDICES:
@@ -393,7 +426,10 @@ class CameraManager:
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             os.makedirs(self.recording_dir, exist_ok=True)
             files = []
-            for cam_idx in self.CAMERA_INDICES:
+            cams = self.streaming_indices()
+            if not cams:
+                return {"status": "error", "message": "no camera is streaming", "files": []}
+            for cam_idx in cams:
                 output = os.path.join(self.recording_dir, f"cam{cam_idx}_{ts}.mp4")
                 cmd = [
                     "ffmpeg", "-y",

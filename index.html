@@ -242,7 +242,7 @@
                 <div id="cam1-content" style="position: absolute; top: 0; left: 0;
                                               width: 100%; height: 100%;
                                               transform-origin: center center;">
-                    <iframe src="http://frodo.local:8889/cam1/"
+                    <iframe src="about:blank" data-rig-src="8889/cam1/"
                             style="display: block; width: 100%; height: 100%; border: 0;"></iframe>
                     <div id="cam1-overlay" style="
                         position: absolute;
@@ -306,7 +306,7 @@
                 </div>
             </div>
             <div id="last-capture-container">
-                <img id="last-capture" src="http://frodo.local:8000/captures/cam0_last.jpg">
+                <img id="last-capture" data-rig-src="8000/captures/cam0_last.jpg">
             </div>
             <!-- Zoom-view (cam0) iframe + click overlay wrapped together for the
                  same reason as cam1-wrap above. -->
@@ -314,7 +314,7 @@
                                        width: 365px; height: 206px;
                                        overflow: hidden; position: relative;
                                        border: 4px solid #b80000; box-sizing: content-box;">
-                <iframe src="http://frodo.local:8889/cam0/"
+                <iframe src="about:blank" data-rig-src="8889/cam0/"
                         style="display: block; width: 100%; height: 100%; border: 0;
                                transform-origin: center center;"></iframe>
                 <div id="cam0-overlay" style="
@@ -818,7 +818,13 @@
     </div>
 
     <script>
-        var socket = new WebSocket("ws://frodo.local:8765");
+        // Rig host = whatever host served this page (samwise.local, an IP, ...).
+        // Falls back to samwise.local when opened from file://.
+        const RIG_HOST = window.location.hostname || "samwise.local";
+        document.querySelectorAll("[data-rig-src]").forEach(function (el) {
+            el.src = "http://" + RIG_HOST + ":" + el.dataset.rigSrc;
+        });
+        var socket = new WebSocket("ws://" + RIG_HOST + ":8765");
 
         function connect(socket){
             socket.onopen = function(event) {
@@ -3391,7 +3397,7 @@
                     const controller = new AbortController();
                     const timeoutId = setTimeout(() => controller.abort(), 1000);
                     
-                    const response = await fetch(`http://frodo.local:${port}/port-info`, {
+                    const response = await fetch(`http://${RIG_HOST}:${port}/port-info`, {
                         method: 'GET',
                         signal: controller.signal
                     });
@@ -3404,7 +3410,7 @@
                         
                         // Update the image source
                         const lastCaptureImg = document.getElementById('last-capture');
-                        lastCaptureImg.src = `http://frodo.local:${detectedPort}/captures/cam0_last.jpg`;
+                        lastCaptureImg.src = `http://${RIG_HOST}:${detectedPort}/captures/cam0_last.jpg`;
                         
                         writeToConsole(`HTTP server detected on port ${detectedPort}`);
                         return;
