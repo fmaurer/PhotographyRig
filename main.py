@@ -94,7 +94,12 @@ def start_http_server(port=8000):
                 print(f"Port {port_attempt} is still in use after retries, trying next port...")
                 continue
             
-            with socketserver.TCPServer(("", port_attempt), CustomHTTPRequestHandler) as httpd:
+            # allow_reuse_address (SO_REUSEADDR): after a restart, the previous run's
+            # closed browser connections sit in TIME_WAIT for ~60 s; without it the
+            # bind fails and the UI silently moves to port 8001.
+            class _ReusableTCPServer(socketserver.TCPServer):
+                allow_reuse_address = True
+            with _ReusableTCPServer(("", port_attempt), CustomHTTPRequestHandler) as httpd:
                 # Store the port information globally
                 global http_server_info
                 http_server_info['port'] = port_attempt
