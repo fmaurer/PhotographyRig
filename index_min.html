@@ -112,6 +112,17 @@
     </style>
 </head>
 <body>
+<!-- Emergency stop, pinned to the top of the window (stays visible while scrolling). -->
+<div id="estop-bar" style="position: sticky; top: 0; z-index: 10000; background-color: #1d1d1d; padding: 6px 0 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.6);">
+    <div style="width: 800px; max-width: 100%; margin: 0 auto;">
+        <button id="estop-button" onclick="stopMotors()" title="Stop both motors now (Esc)" style="width: 100%; padding: 12px; background-color: #d00000; color: white; font-weight: bold; font-size: 22px; letter-spacing: 2px; border: 2px solid #ff6b6b; border-radius: 4px; cursor: pointer;">&#x23F9; STOP MOTORS (Esc)</button>
+        <div id="motor-alert" style="display:none; margin-top:6px; padding:8px; background:#5a0000; color:white; border:1px solid #f44336; font-size:13px;">
+            <span id="motor-alert-text"></span>
+            <button onclick="document.getElementById('motor-alert').style.display='none'" style="float:right; background:none; color:white; border:1px solid white; cursor:pointer;">dismiss</button>
+        </div>
+        <div id="driver-status" style="margin-top:4px; font-size:12px; color:#9E9E9E;">Drivers: waiting for status...</div>
+    </div>
+</div>
 
 <div id="container">
 
@@ -155,14 +166,6 @@
         <h3>Move</h3>
         <button onclick="toggleClickToMove()" id="click-to-move-btn" class="btn btn-green">Enable Click-to-Move</button>
         <span id="click-status" style="color: gray; font-size: 12px;">Disabled</span>
-        <button class="btn btn-red" onclick="stopMotors()" title="Stop both motors now (Esc)" style="margin-left:auto; font-weight:bold;">STOP (Esc)</button>
-    </div>
-    <div class="ctrl-row" style="display:block;">
-        <div id="motor-alert" style="display:none; margin-top:6px; padding:8px; background:#5a0000; color:white; border:1px solid #f44336; font-size:13px;">
-            <span id="motor-alert-text"></span>
-            <button onclick="document.getElementById('motor-alert').style.display='none'" style="float:right; background:none; color:white; border:1px solid white; cursor:pointer;">dismiss</button>
-        </div>
-        <div id="driver-status" style="margin-top:4px; font-size:12px; color:#9E9E9E;">Drivers: waiting for status...</div>
     </div>
 
     <!-- IMU -->

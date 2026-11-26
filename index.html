@@ -10,7 +10,7 @@
         #container { 
             /* background-color: Gray; */
             width:800px;
-            margin: 50px auto;
+            margin: 10px auto;
         }
 
         .camera-controls {
@@ -213,6 +213,17 @@
     </style>
 </head>
 <body>
+<!-- Emergency stop, pinned to the top of the window (stays visible while scrolling). -->
+<div id="estop-bar" style="position: sticky; top: 0; z-index: 10000; background-color: #1d1d1d; padding: 6px 0 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.6);">
+    <div style="width: 800px; max-width: 100%; margin: 0 auto;">
+        <button id="estop-button" onclick="stopMotors()" title="Stop both motors now (Esc)" style="width: 100%; padding: 12px; background-color: #d00000; color: white; font-weight: bold; font-size: 22px; letter-spacing: 2px; border: 2px solid #ff6b6b; border-radius: 4px; cursor: pointer;">&#x23F9; STOP MOTORS (Esc)</button>
+        <div id="motor-alert" style="display:none; margin-top:6px; padding:8px; background:#5a0000; color:white; border:1px solid #f44336; font-size:13px;">
+            <span id="motor-alert-text"></span>
+            <button onclick="document.getElementById('motor-alert').style.display='none'" style="float:right; background:none; color:white; border:1px solid white; cursor:pointer;">dismiss</button>
+        </div>
+        <div id="driver-status" style="margin-top:4px; font-size:12px; color:#9E9E9E;">Drivers: waiting for status...</div>
+    </div>
+</div>
 
     <div id="container">
 
@@ -280,6 +291,17 @@
                                  fill="none" vector-effect="non-scaling-stroke"
                                  style="display: none;"></polygon>
                     </svg>
+                    <!-- Aircraft overlay (tracker PC feed, see overlay_server.py):
+                         radio aircraft, NN detections and the zoom aim spot, in the
+                         wide image's 1920x1080 pixels. Inside #cam1-content so it
+                         follows the magnification like everything else. -->
+                    <svg id="aircraft-overlay" viewBox="0 0 1920 1080" preserveAspectRatio="none"
+                         style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+                                pointer-events: none; z-index: 11; overflow: hidden;"></svg>
+                    <!-- Click-to-follow layer: on only while "Click to follow" is armed. -->
+                    <div id="aircraft-click-layer" style="position: absolute; top: 0; left: 0;
+                         width: 100%; height: 100%; background: transparent; cursor: crosshair;
+                         z-index: 12; display: none;"></div>
                     <!-- Crosshair marking the exact center of the cam1 view.
                          Two thin perpendicular lines positioned via 50% + translate
                          so the cross hits the true center regardless of pixel grid;
@@ -370,6 +392,36 @@
                     <button onclick="quickGotoLatLon()" style="background-color: #FF5722; color: white; padding: 5px 10px; border: none; cursor: pointer; white-space: nowrap;">Point at</button>
                 </div>
             </div>
+        </div>
+
+        <!-- Aircraft overlay: follow controls for the tracker PC (overlay_command). -->
+        <div class="camera-controls" id="aircraft-panel">
+            <h2>Aircraft</h2>
+            <div id="ac-status" style="font-size: 12px; color: #9E9E9E; margin-bottom: 6px;">Tracker: waiting for status...</div>
+            <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px;">
+                <button id="ac-click-btn" onclick="toggleOverlayClickFollow()" title="Then click an aircraft, a detection or any spot on the wide view to follow it"
+                        style="background-color: #4CAF50; color: white; padding: 5px 10px; border: none; cursor: pointer;">Click to follow</button>
+                <button onclick="overlayCommand({cmd: 'stop'})" title="End the current follow; the camera returns home"
+                        style="background-color: #b80000; color: white; padding: 5px 10px; border: none; cursor: pointer;">Stop follow</button>
+                <button onclick="overlayCommand({cmd: 'hold'})" title="No automatic follows (operator follows still work)"
+                        style="background-color: #555; color: white; padding: 5px 10px; border: none; cursor: pointer;">Hold</button>
+                <button onclick="overlayCommand({cmd: 'release'})" title="Automatic follows resume"
+                        style="background-color: #555; color: white; padding: 5px 10px; border: none; cursor: pointer;">Release</button>
+                <button onclick="if (confirm('Recenter: optical return to the home view (~30 s, follows held meanwhile)?')) overlayCommand({cmd: 'recenter'})"
+                        title="Optical return to the saved home view (~30 s); refused during a follow"
+                        style="background-color: #555; color: white; padding: 5px 10px; border: none; cursor: pointer;">Recenter</button>
+                <label style="color: #aaa; font-size: 12px; align-self: center; margin-left: 6px;">
+                    <input type="checkbox" id="ac-show" checked onchange="renderOverlay()"> Show overlay</label>
+                <label style="color: #aaa; font-size: 12px; align-self: center;">
+                    <input type="checkbox" id="ac-show-paths" checked onchange="renderOverlay()"> Paths</label>
+            </div>
+            <div id="ac-reply" style="font-size: 12px; color: #ccc; min-height: 16px; margin-bottom: 6px;"></div>
+            <table id="ac-table" style="width: 100%; font-size: 12px; color: #ddd; border-collapse: collapse;">
+                <thead><tr style="color: #888; text-align: left;">
+                    <th>Callsign</th><th>ICAO</th><th>Where</th><th></th></tr></thead>
+                <tbody></tbody>
+            </table>
+            <div id="ac-det" style="font-size: 11px; color: #888; margin-top: 4px;"></div>
         </div>
 
         <!-- Camera Controls -->
@@ -800,12 +852,6 @@
             <div class="half-panel"><button onclick="sendCommand('pan', 150)">&#8678;</button></div>
             <div class="half-panel"><button onclick="sendCommand('pan', -150)">&#8680;</button></div>
 
-            <button onclick="stopMotors()" title="Stop both motors now (Esc)" style="width: 100%; margin-top: 6px; padding: 12px; background-color: #b80000; color: white; font-weight: bold; font-size: 18px; border: none; cursor: pointer;">STOP (Esc)</button>
-            <div id="motor-alert" style="display:none; margin-top:6px; padding:8px; background:#5a0000; color:white; border:1px solid #f44336; font-size:13px;">
-                <span id="motor-alert-text"></span>
-                <button onclick="document.getElementById('motor-alert').style.display='none'" style="float:right; background:none; color:white; border:1px solid white; cursor:pointer;">dismiss</button>
-            </div>
-            <div id="driver-status" style="margin-top:4px; font-size:12px; color:#9E9E9E;">Drivers: waiting for status...</div>
 
             <button class="hidden" onclick="sendCommand('tilt', 1)">Tilt Up</button>
             <button class="hidden" onclick="sendCommand('tilt', -1)">Tilt Down</button>
@@ -1771,6 +1817,7 @@
             if (!cropDrawEnabled && clickToMoveEnabled) {
                 toggleClickToMove();
             }
+            if (!cropDrawEnabled && overlayClickFollow) toggleOverlayClickFollow();
             cropDrawEnabled = !cropDrawEnabled;
             const overlay = document.getElementById('cam1-overlay');
             if (cropDrawEnabled) {
@@ -1979,6 +2026,7 @@
         }
 
         function togglePairsMode() {
+            if (!pairsMode && overlayClickFollow) toggleOverlayClickFollow();
             if (pairsMode) {
                 _exitPairsMode();
             } else {
@@ -2753,6 +2801,9 @@
             // Try to parse as JSON for structured messages
             try {
                 const msg = JSON.parse(response);
+                if (msg.type === 'aircraft' || msg.type === 'overlay_status' || msg.type === 'overlay_reply') {
+                    handleOverlayMessage(msg); return;
+                }
                 if (msg.type === 'photo_saved') { onPhotoSaved(msg); return; }
                 if (msg.type === 'driver_status') { renderDriverStatus(msg); return; }
                 if (msg.type === 'motor_alert') { showMotorAlert(msg); return; }
@@ -3092,6 +3143,7 @@
             // Mutual exclusion with the other overlay modes.
             if (!clickToMoveEnabled && cropDrawEnabled) toggleCropDraw();
             if (!clickToMoveEnabled && pairsMode) togglePairsMode();
+            if (!clickToMoveEnabled && overlayClickFollow) toggleOverlayClickFollow();
             clickToMoveEnabled = !clickToMoveEnabled;
             const btns = document.querySelectorAll('.click-to-move-btn');
             const status = document.getElementById('click-status');
@@ -3562,6 +3614,293 @@
                 }
             }, 3000);
         }
+    </script>
+    <script>
+        // ===== Aircraft overlay (tracker PC feed relayed by overlay_server.py) =====
+        // Coordinates are wide-image pixels (1920x1080); the SVG viewBox matches,
+        // so they map straight onto the cam1 view at any size or magnification.
+        const OV_W = 1920, OV_H = 1080, OV_STALE_MS = 1000, OV_NOREPLY_MS = 5000;
+        let overlayFrame = null;          // last aircraft frame
+        let overlayFrameAt = 0;           // performance.now() when it arrived
+        let overlayStatus = {connected: false, stale: true, message: ''};
+        let overlayClickFollow = false;
+        let overlayUiId = 0;
+        const overlayPending = {};        // ui_id -> {label, timer}
+        const overlayRows = new Map();    // aircraft id -> <tr>
+
+        function ovEsc(v) {
+            return String(v).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+        }
+        function ovFresh() {
+            return overlayFrame && overlayStatus.connected && !overlayStatus.stale &&
+                   performance.now() - overlayFrameAt < OV_STALE_MS;
+        }
+        // Wide-image pixels per screen pixel right now (font sizes, hit radii).
+        function ovUnitsPerPx() {
+            const r = document.getElementById('aircraft-overlay').getBoundingClientRect();
+            return r.width > 0 ? OV_W / r.width : 5;
+        }
+        function ovPt(p) { return Array.isArray(p) && p.length === 2 && isFinite(p[0]) && isFinite(p[1]); }
+        // Detections are from a newer frame than the video shows: move them back
+        // along their velocity to the top-level t_video.
+        function ovDetPx(it, frame) {
+            const d = frame.detections;
+            if (!ovPt(it.px)) return null;
+            if (Array.isArray(it.vel) && d && isFinite(d.t_video) && isFinite(frame.t_video)) {
+                const dt = frame.t_video - d.t_video;
+                if (Math.abs(dt) < 2) return [it.px[0] + it.vel[0] * dt, it.px[1] + it.vel[1] * dt];
+            }
+            return it.px;
+        }
+        function ovIsFollowed(target, a) { return target != null && a != null && String(target) === String(a); }
+
+        function handleOverlayMessage(msg) {
+            if (msg.type === 'aircraft') {
+                overlayFrame = msg;
+                overlayFrameAt = performance.now();
+                if (overlayStatus.stale) overlayStatus = {...overlayStatus, connected: true, stale: false};
+                renderOverlay();
+                renderOverlayPanel(false);
+            } else if (msg.type === 'overlay_status') {
+                overlayStatus = msg;
+                if (msg.message) writeToConsole('Aircraft overlay: ' + msg.message);
+                renderOverlay();
+                renderOverlayPanel(true);
+            } else if (msg.type === 'overlay_reply') {
+                const p = msg.ui_id != null ? overlayPending[msg.ui_id] : null;
+                const label = p ? p.label : (msg.req_id || '');
+                if (p && msg.ok !== null) { clearTimeout(p.timer); delete overlayPending[msg.ui_id]; }
+                let color = msg.ok === true ? '#81C784' : msg.ok === false ? '#FF8A65' : '#FFD54F';
+                const text = (msg.late ? 'late reply - ' : '') + label + ': ' + (msg.message || (msg.ok ? 'ok' : 'refused'));
+                overlaySetReply(text, color);
+                writeToConsole('Aircraft ' + text);
+            }
+        }
+
+        function overlaySetReply(text, color) {
+            const el = document.getElementById('ac-reply');
+            el.textContent = text;
+            el.style.color = color || '#ccc';
+        }
+
+        // Send one command to the tracker. c = {cmd, target?, px?, t_video?, box?, source?}
+        function overlayCommand(c, label) {
+            if (!(socket && socket.readyState === WebSocket.OPEN)) {
+                overlaySetReply('rig not connected', '#FF8A65'); return;
+            }
+            const ui_id = ++overlayUiId;
+            label = label || (c.cmd + (c.target != null ? ' ' + c.target : ''));
+            overlayPending[ui_id] = {label, timer: setTimeout(() => {
+                if (overlayPending[ui_id]) overlaySetReply(label + ': no reply yet (still waiting)', '#FFD54F');
+            }, OV_NOREPLY_MS + 500)};
+            overlaySetReply(label + ': sent...', '#aaa');
+            socket.send('overlay_command ' + JSON.stringify({...c, ui_id}));
+        }
+
+        function renderOverlay() {
+            const svg = document.getElementById('aircraft-overlay');
+            if (!document.getElementById('ac-show').checked || !ovFresh()) { svg.innerHTML = ''; return; }
+            const f = overlayFrame, u = ovUnitsPerPx();
+            const fs = 11 * u, sw = 'vector-effect="non-scaling-stroke"';
+            const target = f.follow ? f.follow.target : null;
+            const showPaths = document.getElementById('ac-show-paths').checked;
+            const out = [];
+            // Zoom aim marker
+            if (ovPt(f.zoom_spot_px)) {
+                const [x, y] = f.zoom_spot_px, r = 6 * u;
+                out.push(`<g stroke="#FFAB40" stroke-width="1.5" ${sw} fill="none">
+                    <circle cx="${x}" cy="${y}" r="${r}" ${sw}/>
+                    <line x1="${x - 2 * r}" y1="${y}" x2="${x - r}" y2="${y}" ${sw}/><line x1="${x + r}" y1="${y}" x2="${x + 2 * r}" y2="${y}" ${sw}/>
+                    <line x1="${x}" y1="${y - 2 * r}" x2="${x}" y2="${y - r}" ${sw}/><line x1="${x}" y1="${y + r}" x2="${x}" y2="${y + 2 * r}" ${sw}/></g>`);
+            }
+            // NN detections
+            const d = f.detections;
+            if (d && Array.isArray(d.items)) {
+                for (const it of d.items) {
+                    const p = ovDetPx(it, f);
+                    if (!p) continue;
+                    const followed = it.track != null && ovIsFollowed(target, 'nn-' + it.track);
+                    const bw = Math.max((it.box && it.box[0]) || 16, 6 * u) + 6 * u;
+                    const bh = Math.max((it.box && it.box[1]) || 16, 6 * u) + 6 * u;
+                    const col = followed ? '#FFEB3B' : (it.cls === 'bird' ? '#B2FF59' : '#18FFFF');
+                    const dash = it.coasting ? 'stroke-dasharray="4 3"' : '';
+                    const op = it.coasting ? 0.55 : 1;
+                    const w = followed ? 2.5 : 1.5;
+                    if (it.cls === 'bird') {
+                        out.push(`<ellipse cx="${p[0]}" cy="${p[1]}" rx="${bw / 2}" ry="${bh / 2}" fill="none" stroke="${col}" stroke-width="${w}" ${dash} opacity="${op}" ${sw}/>`);
+                    } else {
+                        out.push(`<rect x="${p[0] - bw / 2}" y="${p[1] - bh / 2}" width="${bw}" height="${bh}" fill="none" stroke="${col}" stroke-width="${w}" ${dash} opacity="${op}" ${sw}/>`);
+                    }
+                    if (followed || it.track != null) {
+                        out.push(`<text x="${p[0] + bw / 2 + 2 * u}" y="${p[1] + bh / 2}" font-size="${fs * 0.85}" fill="${col}" opacity="${op}"
+                            font-family="sans-serif" paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${it.cls === 'bird' ? 'bird' : 'nn'} ${ovEsc(it.track ?? '')}</text>`);
+                    }
+                }
+            }
+            // Radio aircraft
+            for (const a of (f.aircraft || [])) {
+                const followed = ovIsFollowed(target, a.id);
+                const col = followed ? '#FFEB3B' : (a.zoom_fix ? '#69F0AE' : '#FF80AB');
+                const name = ovEsc(a.callsign || a.id);
+                if (ovPt(a.live_px)) {
+                    const [x, y] = a.live_px;
+                    if (showPaths) {
+                        let pts = Array.isArray(a.path_px) && a.path_px.length >= 2 ? a.path_px.filter(ovPt) : null;
+                        if (!pts && (a.vx || a.vy)) pts = [[x, y], [x + 8 * a.vx, y + 8 * a.vy]];
+                        if (pts) out.push(`<polyline points="${pts.map(q => q[0] + ',' + q[1]).join(' ')}" fill="none"
+                            stroke="${col}" stroke-width="1" stroke-dasharray="3 3" opacity="0.8" ${sw}/>`);
+                    }
+                    const bw = (a.box && a.box[0]) || 60, bh = (a.box && a.box[1]) || 60;
+                    out.push(`<rect x="${x - bw / 2}" y="${y - bh / 2}" width="${bw}" height="${bh}" fill="none"
+                        stroke="${col}" stroke-width="${followed ? 2.5 : 1.2}" opacity="0.9" ${sw}/>`);
+                    if (ovPt(a.zoom_fix)) {
+                        const [zx, zy] = a.zoom_fix, r = 3 * u;
+                        out.push(`<circle cx="${zx}" cy="${zy}" r="${r}" fill="${col}" stroke="#000" stroke-width="1" ${sw}/>`);
+                    }
+                    out.push(`<text x="${x - bw / 2}" y="${y - bh / 2 - 3 * u}" font-size="${fs}" fill="${col}" font-family="sans-serif"
+                        font-weight="${followed ? 'bold' : 'normal'}" paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${name}</text>`);
+                }
+                const inside = ovPt(a.live_px) && a.live_px[0] >= 0 && a.live_px[0] <= OV_W && a.live_px[1] >= 0 && a.live_px[1] <= OV_H;
+                if (!inside && a.enters_in_s != null && (ovPt(a.live_px) || ovPt(a.home_px))) {
+                    // Just outside and heading in: edge marker at the clamped spot.
+                    const ref = ovPt(a.live_px) ? a.live_px : a.home_px;
+                    const m = 10 * u;
+                    const x = Math.min(Math.max(ref[0], m), OV_W - m), y = Math.min(Math.max(ref[1], m), OV_H - m);
+                    const anchor = x > OV_W / 2 ? 'end' : 'start';
+                    out.push(`<circle cx="${x}" cy="${y}" r="${3 * u}" fill="none" stroke="${col}" stroke-width="1.5" ${sw}/>`);
+                    out.push(`<text x="${x + (anchor === 'end' ? -5 : 5) * u}" y="${y + 4 * u}" text-anchor="${anchor}" font-size="${fs * 0.85}"
+                        fill="${col}" font-family="sans-serif" paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${name} in ${Math.round(a.enters_in_s)}s</text>`);
+                }
+            }
+            svg.innerHTML = out.join('');
+        }
+
+        // Rows are kept per aircraft id (not rebuilt) so Follow buttons stay clickable at 10 Hz.
+        function renderOverlayPanel(statusChanged) {
+            const st = document.getElementById('ac-status');
+            const f = overlayFrame;
+            const fresh = ovFresh();
+            if (!overlayStatus.connected) {
+                st.textContent = 'Tracker: not connected' + (overlayStatus.message ? ' (' + overlayStatus.message + ')' : '');
+                st.style.color = '#FF8A65';
+            } else if (!fresh) {
+                st.textContent = 'Tracker: connected, no data (' + (overlayStatus.message || 'stale') + ') - overlay hidden';
+                st.style.color = '#FFD54F';
+            } else {
+                const fo = f.follow || {};
+                let tgt = fo.target;
+                if (tgt && !String(tgt).startsWith('nn-') && !String(tgt).startsWith('px-')) {
+                    const a = (f.aircraft || []).find(x => x.id === tgt);
+                    if (a && a.callsign) tgt = a.callsign + ' (' + tgt + ')';
+                }
+                st.textContent = 'Tracker: ' + (fo.state || '?') + (tgt ? ' ' + tgt : '') +
+                                 (f.detections ? ' | detector ' + f.detections.mode : ' | detector off');
+                st.style.color = fo.state === 'following' ? '#FFEB3B' : fo.state === 'holding' ? '#FFAB40' : '#81C784';
+            }
+            const tbody = document.querySelector('#ac-table tbody');
+            const list = fresh ? (f.aircraft || []).slice() : [];
+            const target = fresh && f.follow ? f.follow.target : null;
+            const where = a => ovPt(a.live_px) && a.live_px[0] >= 0 && a.live_px[0] <= OV_W && a.live_px[1] >= 0 && a.live_px[1] <= OV_H
+                ? (a.zoom_fix ? 'in view, zoom fix' : 'in view')
+                : a.enters_in_s != null ? 'enters in ' + Math.round(a.enters_in_s) + ' s' : (ovPt(a.live_px) ? 'outside' : 'no pointing');
+            const rank = a => ovIsFollowed(target, a.id) ? 0 : where(a).startsWith('in view') ? 1 : a.enters_in_s != null ? 2 + a.enters_in_s / 1000 : 3;
+            list.sort((a, b) => rank(a) - rank(b) || String(a.callsign || a.id).localeCompare(String(b.callsign || b.id)));
+            const seen = new Set();
+            list.forEach((a, i) => {
+                seen.add(a.id);
+                let tr = overlayRows.get(a.id);
+                if (!tr) {
+                    tr = document.createElement('tr');
+                    tr.innerHTML = '<td></td><td style="color:#888"></td><td></td><td style="text-align:right"></td>';
+                    const b = document.createElement('button');
+                    b.textContent = 'Follow';
+                    b.style.cssText = 'background-color:#1976D2;color:white;padding:2px 8px;border:none;cursor:pointer;font-size:11px;';
+                    b.onclick = () => {
+                        const a2 = (overlayFrame && overlayFrame.aircraft || []).find(x => x.id === a.id) || a;
+                        overlayCommand({cmd: 'follow', target: a.id}, 'follow ' + (a2.callsign || a.id));
+                    };
+                    tr.cells[3].appendChild(b);
+                    overlayRows.set(a.id, tr);
+                }
+                tr.cells[0].textContent = a.callsign || '-';
+                tr.cells[1].textContent = a.id;
+                tr.cells[2].textContent = where(a);
+                tr.style.color = ovIsFollowed(target, a.id) ? '#FFEB3B' : '';
+                if (tbody.children[i] !== tr) tbody.insertBefore(tr, tbody.children[i] || null);
+            });
+            for (const [id, tr] of overlayRows) if (!seen.has(id)) { tr.remove(); overlayRows.delete(id); }
+            const det = fresh && f.detections ? f.detections.items || [] : null;
+            document.getElementById('ac-det').textContent = det == null ? '' :
+                'Detections: ' + det.length + (det.length ? ' (' + det.filter(i => i.cls === 'plane').length + ' plane, ' +
+                det.filter(i => i.cls === 'bird').length + ' bird)' : '');
+        }
+
+        // Hide stale overlays even if no overlay_status arrives (rig socket lost, etc.).
+        setInterval(() => {
+            if (overlayFrame && performance.now() - overlayFrameAt > OV_STALE_MS && !overlayStatus.stale) {
+                const rigUp = socket && socket.readyState === WebSocket.OPEN;
+                overlayStatus = {...overlayStatus, stale: true, connected: overlayStatus.connected && rigUp,
+                                 message: rigUp ? 'no aircraft frame for 1 s' : 'rig connection lost'};
+                renderOverlay(); renderOverlayPanel(true);
+            }
+        }, 250);
+
+        function toggleOverlayClickFollow() {
+            if (!overlayClickFollow) {
+                if (clickToMoveEnabled) toggleClickToMove();
+                if (cropDrawEnabled) toggleCropDraw();
+                if (pairsMode) togglePairsMode();
+            }
+            overlayClickFollow = !overlayClickFollow;
+            document.getElementById('aircraft-click-layer').style.display = overlayClickFollow ? 'block' : 'none';
+            const b = document.getElementById('ac-click-btn');
+            b.textContent = overlayClickFollow ? 'Cancel click to follow' : 'Click to follow';
+            b.style.backgroundColor = overlayClickFollow ? '#f44336' : '#4CAF50';
+            if (overlayClickFollow) overlaySetReply('Click an aircraft, a detection or a spot on the wide view', '#aaa');
+        }
+
+        // One click = one follow command; the mode disarms after it.
+        document.getElementById('aircraft-click-layer').addEventListener('click', ev => {
+            const r = ev.currentTarget.getBoundingClientRect();
+            const px = [(ev.clientX - r.left) / r.width * OV_W, (ev.clientY - r.top) / r.height * OV_H];
+            toggleOverlayClickFollow();
+            const f = ovFresh() ? overlayFrame : null;
+            const u = ovUnitsPerPx(), slack = 8 * u;
+            let best = null;
+            if (f) {
+                for (const a of (f.aircraft || [])) {        // inside an aircraft box (+ slack)
+                    if (!ovPt(a.live_px)) continue;
+                    const bw = (a.box && a.box[0]) || 60, bh = (a.box && a.box[1]) || 60;
+                    const dx = Math.abs(px[0] - a.live_px[0]), dy = Math.abs(px[1] - a.live_px[1]);
+                    if (dx <= bw / 2 + slack && dy <= bh / 2 + slack) {
+                        const dist = Math.hypot(dx, dy);
+                        if (!best || dist < best.dist) best = {dist, kind: 'ac', a};
+                    }
+                }
+                for (const it of ((f.detections && f.detections.items) || [])) {   // near a detection
+                    const p = ovDetPx(it, f);
+                    if (!p) continue;
+                    const rad = Math.max(...((it.box || [16, 16]))) / 2 + slack;
+                    const dist = Math.hypot(px[0] - p[0], px[1] - p[1]);
+                    if (dist <= rad && (!best || dist < best.dist)) best = {dist, kind: 'nn', it, p};
+                }
+            }
+            if (best && best.kind === 'ac') {
+                overlayCommand({cmd: 'follow', target: best.a.id}, 'follow ' + (best.a.callsign || best.a.id));
+            } else if (best && best.it.track != null) {
+                overlayCommand({cmd: 'follow', target: 'nn:' + best.it.track}, 'follow detection ' + best.it.track);
+            } else if (best) {                               // detection without a track id
+                overlayCommand({cmd: 'follow_px', px: best.it.px, t_video: f.detections.t_video,
+                                box: best.it.box || null, source: 'nn'}, 'follow detection');
+            } else {
+                // A spot: t_video null -> the tracker assumes the frame on screen (now - 0.7 s).
+                overlayCommand({cmd: 'follow_px', px: [Math.round(px[0] * 10) / 10, Math.round(px[1] * 10) / 10],
+                                t_video: null, box: null, source: 'click'},
+                               'follow spot ' + Math.round(px[0]) + ',' + Math.round(px[1]));
+            }
+        });
+        // Re-render when magnification changes the label scale.
+        window.addEventListener('resize', renderOverlay);
     </script>
 </body>
 </html>
