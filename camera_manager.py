@@ -68,6 +68,24 @@ AF_MODE_ENUM = {
 }
 
 
+
+def yuv420_rec709_to_bgr(yuv: np.ndarray) -> np.ndarray:
+    """I420 array (H*3/2, W) from picamera2, limited-range BT.709 (what the
+    camera's video configuration produces) -> full-range BGR uint8.
+    OpenCV's COLOR_YUV2BGR_I420 assumes BT.601, which shifts colours."""
+    h = yuv.shape[0] * 2 // 3
+    w = yuv.shape[1]
+    y = yuv[:h].astype(np.float32) - 16.0
+    u = yuv[h:h + h // 4].reshape(h // 2, w // 2).astype(np.float32) - 128.0
+    v = yuv[h + h // 4:h + h // 2].reshape(h // 2, w // 2).astype(np.float32) - 128.0
+    u = cv2.resize(u, (w, h), interpolation=cv2.INTER_LINEAR)
+    v = cv2.resize(v, (w, h), interpolation=cv2.INTER_LINEAR)
+    y *= 1.164383
+    b = y + 2.112402 * u
+    g = y - 0.213249 * u - 0.532909 * v
+    r = y + 1.792741 * v
+    return np.clip(cv2.merge([b, g, r]) + 0.5, 0, 255).astype(np.uint8)
+
 class _CameraStream:
     """One camera's streaming state."""
 
@@ -272,17 +290,26 @@ class _CameraStream:
             return merged
 
     def capture_still(self, path: str) -> str:
-        """Capture a JPEG without interrupting the stream. Returns the path."""
+        """Capture a JPEG without interrupting the stream. Returns the path.
+
+        The main stream is limited-range Rec.709 YUV420 (black 16, white 235),
+        which the H.264 stream signals and players expand. picamera2's
+        request.save() wrote those values into the JPEG as if they were full
+        range, so photos had grey blacks and less contrast than the stream.
+        Convert explicitly instead."""
         with self.lock:
             if self.picam2 is None:
                 raise RuntimeError(f"cam{self.cam_idx} is not streaming")
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             request = self.picam2.capture_request()
             try:
-                request.save("main", path)
+                yuv = request.make_array("main")
             finally:
                 request.release()
-            return path
+        bgr = yuv420_rec709_to_bgr(yuv)
+        if not cv2.imwrite(path, bgr, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+            raise RuntimeError(f"could not write {path}")
+        return path
 
     def capture_array(self, *, color: str = "gray") -> np.ndarray:
         """Capture a single frame as a numpy array without interrupting the stream.
@@ -309,7 +336,7 @@ class _CameraStream:
                 request.release()
         if color == "gray":
             return cv2.cvtColor(yuv, cv2.COLOR_YUV2GRAY_I420)
-        return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR_I420)
+        return yuv420_rec709_to_bgr(yuv)
 
     def camera_controls_snapshot(self) -> dict:
         with self.lock:
