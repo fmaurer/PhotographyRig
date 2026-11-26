@@ -173,10 +173,12 @@ class _CameraStream:
         )
         self.picam2.configure(video_config)
 
+        # Per-camera "Bitrate" setting (bit/s); falls back to the manager's default.
+        bitrate = int(settings.get("Bitrate") or self.bitrate)
         try:
-            self.encoder = H264Encoder(bitrate=self.bitrate, profile="baseline")
+            self.encoder = H264Encoder(bitrate=bitrate, profile="baseline")
         except TypeError:
-            self.encoder = H264Encoder(bitrate=self.bitrate)
+            self.encoder = H264Encoder(bitrate=bitrate)
         self.output = FfmpegOutput(
             f"-f rtsp -rtsp_transport tcp {self.rtsp_url}",
             audio=False,
@@ -184,7 +186,7 @@ class _CameraStream:
         self.picam2.start_recording(self.encoder, self.output)
         print(f"camera_manager: cam{self.cam_idx} streaming -> {self.rtsp_url} "
               f"({settings['StreamSize'][0]}x{settings['StreamSize'][1]} "
-              f"@ {self.bitrate/1e6:.1f} Mbit/s)")
+              f"@ {bitrate/1e6:.1f} Mbit/s)")
 
     def stop(self) -> None:
         with self.lock:

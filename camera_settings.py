@@ -42,6 +42,8 @@ DEFAULTS = {
         "AfMode": "manual",
         "StreamSize": [1280, 720],
         "StillSize": [9152, 6944],  # Arducam 64MP native
+        # Optional per camera: "Bitrate": H.264 stream bit/s (default 1 Mbit/s
+        # from CameraManager). 1080p needs ~4 Mbit/s to stay clean while panning.
     },
 }
 
