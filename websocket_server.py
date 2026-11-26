@@ -13,6 +13,7 @@ import queue
 import json
 import math
 import shutil
+import concurrent.futures
 
 # IMU imports. The BNO08x IMU lives on I2C bus 1, which on samwise is the
 # pan AS5600 encoder's bus and there is no IMU fitted, so probing it is opt-in:
@@ -38,6 +39,7 @@ except ImportError as e:
 
 from pointing_calibration import PointingCalibration, earth_to_azel
 from homography_calibration import HomographyCalibration
+from overlay_server import OverlayHub, PUBLISHER_PATH
 from backlash_calibration import (
     BacklashCalibrator,
     CalibrationAborted as BacklashAborted,
@@ -72,12 +74,16 @@ def _find_mediamtx_binary():
 # meaningful per-call information — suppress their "Received message: ..."
 # log line to keep the server stdout readable. Add others here if more
 # polling endpoints are introduced.
+VEL_UNLATCH_GAP_S = 2.0
+
 _QUIET_LOG_COMMANDS = frozenset({
     "track",            # streamed at frame rate by the external tracker
+    "vel",              # follower velocity mode, every 50 ms
     "track_status",
     "get_pointing_state",
     "get_imu",
     "get_homography",
+    "overlay_command",  # overlay_server.py logs it itself
 })
 
 class WebSocketServer:
@@ -91,6 +97,21 @@ class WebSocketServer:
         self.current_pan_movement = None
         self.current_tilt_movement = None
         self.movement_lock = threading.Lock()
+        # Moves are started on ONE worker thread, in arrival order, so the event
+        # loop (pointing_state replies, STOP) never waits for a previous move to
+        # wind down. STOP bumps _stop_gen; queued moves from before it are dropped.
+        self._motion_exec = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="motion")
+        self._stop_gen = 0
+        self._vel_pending = None
+        self._vel_starting = False
+        # SAFETY: after STOP or a vel-mode fault the follower's vel stream (every
+        # 50 ms) must not restart the motors. vel stays refused until the stream
+        # pauses for VEL_UNLATCH_GAP_S (the follower has noticed and stopped).
+        self._vel_block = None
+        self._vel_fault_ack = None
+        self._vel_last_rx = 0.0
+        self._pointing_subs = {}
+        self._err_sent = {}
         
         # IMU setup
         self.imu_data = {
@@ -112,6 +133,9 @@ class WebSocketServer:
         
         # Track connected clients for broadcasting
         self.connected_clients = set()
+        # Aircraft overlay: the tracker PC publishes on ws://<host>:8765/overlay;
+        # frames are forwarded to the UI clients above (see overlay_server.py).
+        self.overlay = OverlayHub(self._broadcast)
 
         # Backlash calibration state (one run at a time).
         self._backlash_calibrator = None
@@ -752,7 +776,68 @@ class WebSocketServer:
         else:
             state['current_az_deg'] = None
             state['current_el_deg'] = None
+        state.update(self._motion_state())
         return state
+
+    def _motion_state(self):
+        """Follower extras: rig clock, mode, per-axis moving / target / errors / encoder health."""
+        drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
+        tr = getattr(self, "tracker", None)
+        tr_on = tr is not None and tr.running
+        moving, target, err, enc_ok = {}, {}, {}, {}
+        for ax, d in drivers.items():
+            v = tr.v_now.get(ax, 0.0) if tr_on else 0.0
+            moving[ax] = bool(getattr(d, "is_moving", False) or abs(v) > 1e-3)
+            target[ax] = getattr(d, "target_steps", None) if getattr(d, "is_moving", False) else None
+            msg = getattr(d, "last_error", None)
+            t_err = getattr(d, "last_error_t", None)
+            err[ax] = None if not msg else {"message": msg, "t_ms": None if t_err is None else int(t_err * 1000)}
+            enc = getattr(d, "enc", None)
+            enc_ok[ax] = True if enc is None else enc.pos_deg(ax) is not None
+        if tr_on:
+            mode = tr.mode or "track"
+        else:
+            mode = "move" if any(getattr(d, "is_moving", False) for d in drivers.values()) else "idle"
+        return {
+            "t_ms": int(time.time() * 1000),
+            "mode": mode,
+            "moving": moving,
+            "target_pan_steps": target["pan"],
+            "target_tilt_steps": target["tilt"],
+            "last_error": err,
+            "encoder_ok": enc_ok,
+            "tracker_fault": None if tr is None else tr.fault,
+        }
+
+    def _motion_params(self):
+        drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
+        tr = getattr(self, "tracker", None)
+        out = {"counters": "output-shaft encoders (AS5600, 0.088 deg/count): counters are the measured shaft "
+                           "position (no steps can be lost) and update continuously, in whole encoder counts "
+                           "(pan 189 / tilt 71 steps); backlash is taken up by the closed loop "
+                           "(send no backlash compensation)",
+               "travel_limits": "travel_limits_abs_deg are absolute encoder-frame degrees (rig_limits.json), "
+                                "not counter steps; moves are clamped and vel brakes before them",
+               "vel_reversal_pause_needed": False}
+        for ax, d in drivers.items():
+            spd = float(getattr(d, "steps_per_deg", 0) or 0)
+            a = {"steps_per_deg": spd,
+                 "move_max_dps": round(getattr(d, "max_dps", 0.0), 3),
+                 "move_max_sps": round(getattr(d, "max_dps", 0.0) * spd),
+                 "move_accel_dps2": getattr(d, "accel", None),
+                 "move_tolerance_deg": getattr(d, "tol", None),
+                 "nudge_max_steps": None,
+                 "travel_limits_abs_deg": list(d.travel_limits) if getattr(d, "travel_limits", None) else None}
+            try:
+                import TMC2209Driver as _td
+                a["nudge_max_steps"] = int(_td.NUDGE_MAX_DEG * spd)
+            except Exception:
+                pass
+            if tr is not None:
+                a.update({"vel_max_dps": tr.cfg["max_dps"], "vel_max_sps": round(tr.cfg["max_dps"] * spd),
+                          "vel_accel_dps2": tr.cfg["accel"], "vel_accel_sps2": round(tr.cfg["accel"] * spd)})
+            out[ax] = a
+        return out
 
     async def _send_pointing_state(self, websocket, ok=True, message=None):
         payload = {'type': 'pointing_state', 'ok': ok}
@@ -1020,8 +1105,13 @@ class WebSocketServer:
 
     async def handler(self, websocket):
         """Handle incoming WebSocket messages."""
+        path = getattr(getattr(websocket, "request", None), "path", "/") or "/"
+        if path.split("?", 1)[0] == PUBLISHER_PATH:       # tracker PC publisher, never a browser
+            await self.overlay.publisher(websocket)
+            return
         # Add client to tracking set
         self.connected_clients.add(websocket)
+        await self.overlay.on_browser_connect(websocket)
         if getattr(self, "_driver_status_last", None) is not None:   # new page: show driver state at once
             try:
                 await websocket.send(json.dumps({"type": "driver_status", **self._driver_status_last}))
@@ -1058,6 +1148,10 @@ class WebSocketServer:
                     
                 command = parts[0]
                 
+                if command == "overlay_command":     # relay to the tracker; reply comes back async
+                    asyncio.create_task(self.overlay.browser_command(
+                        websocket, message.split(None, 1)[1] if len(parts) > 1 else ""))
+                    continue
                 # Handle IMU commands
                 if command == "get_imu":
                     await self.send_imu_data(websocket)
@@ -1416,9 +1510,54 @@ class WebSocketServer:
                     pan_arg = int(parts[1])
                     tilt_arg = int(parts[2])
 
-                    # Cancel any ongoing movements and start new ones
-                    await self.cancel_and_start_pan(pan_arg)
-                    await self.cancel_and_start_tilt(tilt_arg)
+                    # Cancel any ongoing movements and start new ones (queued in order; no wait)
+                    await self.cancel_and_start_pan(pan_arg, wait=False)
+                    await self.cancel_and_start_tilt(tilt_arg, wait=False)
+                elif command == "vel":
+                    # vel <pan_sps> <tilt_sps> [timeout_s] -- follower velocity mode; no reply (fast path)
+                    try:
+                        if self.tracker is None:
+                            raise RuntimeError("needs the TMC2209 UART motors")
+                        if len(parts) not in (3, 4):
+                            raise ValueError("vel <pan_sps> <tilt_sps> [timeout_s]")
+                        sp, st_ = float(parts[1]), float(parts[2])
+                        tmo = float(parts[3]) if len(parts) == 4 else 1.0
+                        vp = sp / self.motor_controller.driver.steps_per_deg
+                        vt = st_ / self.motor_controller_tilt.driver.steps_per_deg
+                        if self.tracker.running and self.tracker.mode == "track":
+                            raise RuntimeError("external tracking (track_start) is running; send track_stop first")
+                        now_rx = time.monotonic()
+                        gap, self._vel_last_rx = now_rx - self._vel_last_rx, now_rx
+                        if self._vel_block and gap > VEL_UNLATCH_GAP_S:
+                            self._vel_fault_ack, self._vel_block = self.tracker.fault, None
+                        if (not self._vel_block and not self.tracker.running and self.tracker.mode == "vel"
+                                and self.tracker.fault and self.tracker.fault != self._vel_fault_ack):
+                            self._vel_block = f"vel mode stopped: {self.tracker.fault}"
+                        if self._vel_block:
+                            raise RuntimeError(f"{self._vel_block}; vel refused until no vel for "
+                                               f"{VEL_UNLATCH_GAP_S:g} s")
+                        self._vel_pending = (vp, vt, tmo)
+                        if self.tracker.running:
+                            self.tracker.command_vel(vp, vt, tmo)
+                        elif (vp or vt) and not self._vel_starting:
+                            self._vel_starting = True
+                            asyncio.get_running_loop().run_in_executor(
+                                self._motion_exec, self._vel_job, websocket,
+                                asyncio.get_running_loop(), self._stop_gen)
+                    except Exception as e:
+                        await self._send_error_throttled(websocket, f"vel: {e}")
+                elif command == "get_motion_params":
+                    await websocket.send(json.dumps({"type": "motion_params", "data": self._motion_params()}))
+                elif command in ("subscribe_pointing", "unsubscribe_pointing"):
+                    old = self._pointing_subs.pop(websocket, None)
+                    if old:
+                        old.cancel()
+                    if command == "subscribe_pointing":
+                        try:
+                            hz = min(50.0, max(1.0, float(parts[1]) if len(parts) > 1 else 20.0))
+                        except ValueError:
+                            hz = 20.0
+                        self._pointing_subs[websocket] = self._spawn(self._pointing_push(websocket, hz))
                 elif command == "record_start":
                     if self.camera_manager is None:
                         await websocket.send("Error: record unavailable (no CameraManager)")
@@ -1489,10 +1628,10 @@ class WebSocketServer:
                     
                     if command == "pan":
                         # Cancel any ongoing pan movement and start new one
-                        await self.cancel_and_start_pan(argument)
+                        await self.cancel_and_start_pan(argument, wait=False)
                     elif command == "tilt":
                         # Cancel any ongoing tilt movement and start new one
-                        await self.cancel_and_start_tilt(argument)
+                        await self.cancel_and_start_tilt(argument, wait=False)
                     elif command == "capture":
                         self._spawn(self._capture_and_reply(websocket, argument, full=False))
                     elif command == "shutter":
@@ -1516,8 +1655,8 @@ class WebSocketServer:
                         tilt_arg = int(parts[2])
                         
                         # Cancel any ongoing movements and start new ones
-                        await self.cancel_and_start_pan(pan_arg)
-                        await self.cancel_and_start_tilt(tilt_arg)
+                        await self.cancel_and_start_pan(pan_arg, wait=False)
+                        await self.cancel_and_start_tilt(tilt_arg, wait=False)
                     else:
                         await websocket.send(f"Unknown command: {command}")
         except websockets.exceptions.ConnectionClosed:
@@ -1527,6 +1666,9 @@ class WebSocketServer:
             await websocket.send(f"Error: {str(e)}")
         finally:
             # Remove client from tracking set
+            sub = self._pointing_subs.pop(websocket, None)
+            if sub:
+                sub.cancel()
             self.connected_clients.discard(websocket)
             print(f"Client disconnected. Total clients: {len(self.connected_clients)}")
 
@@ -1534,6 +1676,9 @@ class WebSocketServer:
         """Stop both axes now. Uses the driver's emergency_stop() (TMC2209:
         VACTUAL=0 + current 0, no ramp) or stop_movement() for older drivers."""
         drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
+        self._stop_gen = getattr(self, "_stop_gen", 0) + 1     # queued moves / vel starts are dropped
+        self._vel_pending = None
+        self._vel_block = "STOP pressed"
         tracker = getattr(self, "tracker", None)
         if tracker is not None and tracker.running:
             tracker.request_estop()
@@ -1554,35 +1699,77 @@ class WebSocketServer:
                 result[name] = f"error: {e!r} - cut motor power"
         return {"ok": all(v == "stopped" for v in result.values()), **result}
 
-    async def cancel_and_start_pan(self, steps):
-        """Cancel ongoing pan movement and start new one"""
+    def _start_axis_sync(self, axis, steps, stop_gen):
+        """Worker thread: end a vel session, cancel the axis's running move, start the new one."""
+        if stop_gen != self._stop_gen:
+            return                                   # STOP arrived after this move was queued
+        tr = getattr(self, "tracker", None)
+        if tr is not None and tr.running and tr.mode == "vel":
+            tr.stop()                                # a move ends the follower's vel session (ramp, release)
+        mc = self.motor_controller if axis == "pan" else self.motor_controller_tilt
+        attr = "current_pan_movement" if axis == "pan" else "current_tilt_movement"
         with self.movement_lock:
-            if self.current_pan_movement and self.current_pan_movement.is_alive():
-                # Signal the current movement to stop
-                self.motor_controller.driver.stop_movement()
-                self.current_pan_movement.join(timeout=0.1)  # Wait briefly for cleanup
-            
-            # Start new movement
-            self.current_pan_movement = threading.Thread(
-                target=self.motor_controller.step_to, 
-                args=(steps,)
-            )
-            self.current_pan_movement.start()
+            cur = getattr(self, attr)
+            if cur and cur.is_alive():
+                mc.driver.stop_movement()
+                cur.join(timeout=0.1)
+            if int(steps) == 0:
+                return
+            th = threading.Thread(target=mc.step_to, args=(steps,), daemon=True)
+            setattr(self, attr, th)
+            th.start()
 
-    async def cancel_and_start_tilt(self, steps):
-        """Cancel ongoing tilt movement and start new one"""
-        with self.movement_lock:
-            if self.current_tilt_movement and self.current_tilt_movement.is_alive():
-                # Signal the current movement to stop
-                self.motor_controller_tilt.driver.stop_movement()
-                self.current_tilt_movement.join(timeout=0.1)  # Wait briefly for cleanup
-            
-            # Start new movement
-            self.current_tilt_movement = threading.Thread(
-                target=self.motor_controller_tilt.step_to, 
-                args=(steps,)
-            )
-            self.current_tilt_movement.start()
+    async def _start_axis(self, axis, steps, wait=True):
+        fut = asyncio.get_running_loop().run_in_executor(
+            self._motion_exec, self._start_axis_sync, axis, steps, self._stop_gen)
+        if wait:
+            await fut
+        else:
+            fut.add_done_callback(lambda f: f.exception() and print(f"move {axis} {steps}: {f.exception()!r}"))
+
+    async def cancel_and_start_pan(self, steps, wait=True):
+        """Cancel ongoing pan movement and start new one (wait=True: returns once it has started)."""
+        await self._start_axis("pan", steps, wait)
+
+    async def cancel_and_start_tilt(self, steps, wait=True):
+        """Cancel ongoing tilt movement and start new one."""
+        await self._start_axis("tilt", steps, wait)
+
+    def _vel_job(self, websocket, loop, stop_gen):
+        """Worker thread: start the tracker in vel mode, then apply the newest pending vel."""
+        try:
+            if stop_gen != self._stop_gen:
+                return
+            self.tracker.start(mode="vel", auto_release_s=2.0)
+            if stop_gen != self._stop_gen:          # STOP while starting: undo
+                self.tracker.request_estop()
+                return
+            pend = self._vel_pending
+            if pend is not None and stop_gen == self._stop_gen:
+                self.tracker.command_vel(*pend)
+        except Exception as e:
+            asyncio.run_coroutine_threadsafe(self._send_error_throttled(websocket, f"vel: {e}"), loop)
+        finally:
+            self._vel_starting = False
+
+    async def _send_error_throttled(self, websocket, text, every_s=1.0):
+        key = (id(websocket), text.split(":", 1)[0])
+        now = time.monotonic()
+        if now - self._err_sent.get(key, 0.0) < every_s:
+            return
+        self._err_sent[key] = now
+        try:
+            await websocket.send(f"Error: {text}")
+        except Exception:
+            pass
+
+    async def _pointing_push(self, websocket, hz):
+        period = 1.0 / hz
+        nxt = time.monotonic()
+        while True:
+            await self._send_pointing_state(websocket)
+            nxt += period
+            await asyncio.sleep(max(0.0, nxt - time.monotonic()))
 
     async def graceful_shutdown(self):
         """Perform graceful shutdown of all processes"""
@@ -1740,8 +1927,10 @@ class WebSocketServer:
 
     def start_server(self):
         async def start():
-            async with websockets.serve(self.handler, "0.0.0.0", 8765):
+            async with websockets.serve(self.handler, "0.0.0.0", 8765,
+                                        ping_interval=20, ping_timeout=20, max_size=2**20):
                 asyncio.create_task(self._driver_monitor())
+                self.overlay.start()
                 await asyncio.Future()  # run forever
         
         asyncio.run(start())

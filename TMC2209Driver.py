@@ -28,6 +28,15 @@ Safety (each one stops the move and the motor):
     stop if crossed
 Every exit path sends VACTUAL=0 (unverified first, then verified).
 
+Micro-nudges: a move smaller than NUDGE_MAX_DEG (about one encoder count) is
+below what the closed loop can resolve, so it runs OPEN LOOP at NUDGE_DPS for
+the exact time -- but only in the direction the motor last turned (last_dir):
+then the gear gap is already taken up and the output follows. Against that
+direction the whole nudge would vanish into the gap, so it runs as a normal
+closed-loop move instead (lands within about +-0.1 deg). Open-loop size is
+the nominal gear ratio; this rig measured 0.76-0.97x at the lens, so expect
+nudges up to ~20% short (repeat them, as an optical loop does anyway).
+
 Not supported: backlash_calibration.py's raw step access (step_motor,
 enable_device, dir_device). It measures backlash in open-loop steps, which
 this closed-loop driver doesn't have.
@@ -52,6 +61,8 @@ ENC_LOST_S = 0.3
 HEALTH_EVERY_S = 1.0
 RESEND_S = 0.2                 # re-send unchanged VACTUAL this often (unverified writes can drop)
 LOOP_DT = 0.005
+NUDGE_MAX_DEG = 0.12           # moves at or below this (pan 257 / tilt 97 steps) may run open loop
+NUDGE_DPS = 0.25               # open-loop nudge speed at the output
 
 
 class MoveError(RuntimeError):
@@ -94,7 +105,11 @@ class TMC2209Driver(MotorDriver):
         self.ramping_enabled = True
         self.ramp_settings = {'accel_percent': 0.3, 'max_accel_steps': 50}
         self.last_error = None
+        self.last_error_t = None            # time.time() of last_error
         self.last_miss_deg = None
+        self.last_dir = 0                   # encoder-frame sign the motor last turned (0 = unknown)
+        self.target_steps = None            # counter target of the current/last move
+        self.last_move_kind = None          # "move" | "nudge"
 
         self._gen = 0
         self._estop = False
@@ -162,10 +177,15 @@ class TMC2209Driver(MotorDriver):
             gen = self._gen
             self._estop = False
             try:
-                self._move(number, gen)
+                deg = self.step_sign * number / self.steps_per_deg
+                if abs(deg) <= NUDGE_MAX_DEG and self.last_dir and (deg > 0) == (self.last_dir > 0):
+                    self._nudge(number, gen)
+                else:
+                    self._move(number, gen)
                 self.last_error = None
             except Exception as e:
                 self.last_error = str(e)
+                self.last_error_t = time.time()
                 print(f"TMC2209 {self.axis}: move stopped: {e}")
                 if self.on_alert and "STOP command" not in str(e):
                     try:
@@ -242,6 +262,9 @@ class TMC2209Driver(MotorDriver):
                 if abs(deg) < self.tol:
                     return
         target = start + deg
+        self.target_steps = int(round((start - self._zero_deg) * self.steps_per_deg * self.step_sign)) + \
+            int(round(self.step_sign * deg * self.steps_per_deg))
+        self.last_move_kind = "move"
         vmax = max(self.max_dps, self.min_dps)
         acc_v = abs(tu.out_dps_to_vactual(self.axis, self.accel))   # VACTUAL units per second
         timeout = abs(deg) / vmax * 2.0 + 3.0 + vmax / self.accel
@@ -313,6 +336,8 @@ class TMC2209Driver(MotorDriver):
                 if x != self._cur or now - last_send >= RESEND_S:
                     self._send(x)
                     last_send = now
+                if x:
+                    self.last_dir = 1 if tu.vactual_to_out_dps(self.axis, x) > 0 else -1
                 time.sleep(LOOP_DT)
             # decelerate to a stop at the same acceleration
             while self._cur != 0:
@@ -326,6 +351,54 @@ class TMC2209Driver(MotorDriver):
             self.last_miss_deg = None if p is None else round(target - p, 3)
         except Exception:
             self.bus.zero_now([self.addr])   # SAFETY: unverified stop first, no reads
+            self._cur = 0
+            raise
+        finally:
+            try:
+                self.bus.stop_verified(self.addr, release=not self.hold_after_move)
+            finally:
+                self._cur = 0
+                self.is_moving = False
+
+    def _nudge(self, number, gen):
+        """Open-loop micro-move (see the module doc). Same guards that make sense
+        for a fraction of a degree: owner, encoder present, travel limits, STOP."""
+        if self.owner:
+            raise MoveError(f"{self.owner} is driving {self.axis}; send track_stop first")
+        number = self._clamp_steps(number)
+        if number == 0:
+            return
+        deg = self.step_sign * number / self.steps_per_deg
+        p = self._pos(n=5)
+        if p is None:
+            raise MoveError(f"{self.axis} encoder not responding; moves need it")
+        if self._zero_deg is None:
+            self._zero_deg = p
+        if self.travel_limits:
+            a = self.enc.abs_deg(self.axis, n=5)
+            lo, hi = self.travel_limits
+            if a is None or not (lo + LIMIT_BACKOFF_DEG <= a + deg <= hi - LIMIT_BACKOFF_DEG):
+                raise MoveError(f"{self.axis} nudge of {deg:+.3f} deg would leave travel limits [{lo:g}, {hi:g}]")
+        self.target_steps = self.total_signed_steps + int(number)
+        self.last_move_kind = "nudge"
+        dur = abs(deg) / NUDGE_DPS
+        self.is_moving = True
+        try:
+            self._ensure_setup()
+            self._send(tu.out_dps_to_vactual(self.axis, math.copysign(NUDGE_DPS, deg)))
+            t_end = time.monotonic() + dur
+            while True:
+                rest = t_end - time.monotonic()
+                if rest <= 0:
+                    break
+                if gen != self._gen:
+                    if self._estop:
+                        raise MoveError("stopped by STOP command")
+                    break
+                time.sleep(min(rest, 0.002))
+            self._send(0)
+        except Exception:
+            self.bus.zero_now([self.addr])
             self._cur = 0
             raise
         finally:

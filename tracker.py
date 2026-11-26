@@ -17,6 +17,15 @@ Protocol (websocket text, see websocket_server.py):
                                     reconstruct the object's angle and filter its
                                     velocity (alpha-beta filter).
   track_stop                        ramp down, de-energise
+  vel <pan_sps> <tilt_sps> [timeout_s]   (follower protocol, via command_vel) velocity
+                                    in UI counter steps/s; the loop starts by itself
+                                    (mode "vel"), ramps at accel, stops when no vel
+                                    arrives for timeout_s, and releases the motors
+                                    after auto_release_s idle. The rate is held on the
+                                    OUTPUT shaft: the encoder target is integrated
+                                    from the commanded rate (at most VEL_MAX_LAG_DEG
+                                    behind/ahead of the shaft), so a gear-gap crossing
+                                    on a reversal is caught up instead of lost.
   track_config key=value ...        see Tracker.CFG
   track_status                      JSON status incl. latency stats
 STOP (websocket "stop" / UI button / Esc) aborts tracking immediately.
@@ -80,6 +89,7 @@ class Tracker:
     LIMIT_BACKOFF_DEG = 0.2
     LIMIT_OVERRUN_DEG = 0.5
     HEALTH_EVERY_S = 0.5    # alternates axes: each driver checked once a second
+    VEL_MAX_LAG_DEG = 0.5   # vel mode: integrated target kept within this of the shaft
 
     def __init__(self, drivers):
         """drivers: {"pan": TMC2209Driver, "tilt": TMC2209Driver} sharing one bus/encoders."""
@@ -92,8 +102,12 @@ class Tracker:
         self.running = False
         self._stop = False
         self._estop = False
+        self._auto_stopping = False
         self.fault = None
-        self.cmd = {ax: None for ax in AXES}          # (target_enc_deg, vff_enc_dps, t_cmd)
+        self.cmd = {ax: None for ax in AXES}          # (target_enc_deg, vff_enc_dps, t_cmd, timeout_s or None)
+        self.mode = None                              # "track" (track_start) or "vel" (follower)
+        self.auto_release_s = None                    # vel mode: stop + release after this long idle
+        self.v_now = {ax: 0.0 for ax in AXES}         # output deg/s (encoder frame) last sent
         self.t_last_cmd = None
         self.seq = 0
         self._seen_seq = 0
@@ -187,15 +201,50 @@ class Tracker:
             else:
                 v_enc = 0.0
             # object position at frame time, moved on to now
-            new[ax] = (obj_then + v_enc * lat, v_enc, now)
+            new[ax] = (obj_then + v_enc * lat, v_enc, now, None)
         with self.lock:
             self.cmd.update(new)
             self.t_last_cmd = now
             self.seq += 1
             self.t_recv[self.seq] = now
 
+    def command_vel(self, v_pan, v_tilt, timeout_s=1.0):
+        """Velocity command, UI frame deg/s per axis (None = leave that axis).
+        Holds the rate on the output shaft (see the module doc); 0 = ramp to a
+        stop without pulling back to an older position."""
+        if not self.running:
+            raise RuntimeError(f"tracking not running{' (fault: ' + self.fault + ')' if self.fault else ''}")
+        now = time.monotonic()
+        timeout_s = min(max(float(timeout_s), 0.1), 2.0)
+        vmax = self.cfg["max_dps"]
+        new = {}
+        for ax, v in (("pan", v_pan), ("tilt", v_tilt)):
+            if v is None or not math.isfinite(v):
+                continue
+            v_enc = self.drv[ax].step_sign * max(-vmax, min(vmax, float(v)))
+            if abs(v_enc) < 1e-6:
+                new[ax] = None                                  # stop: ramp down, no position hold
+                continue
+            p = self.hist[ax][-1][1] if self.hist[ax] else self.enc.pos_deg(ax, n=2)
+            if p is None:
+                continue
+            prev = self.cmd.get(ax)
+            if prev is not None and prev[3] is not None and now - prev[2] <= prev[3]:
+                tgt = prev[0] + prev[1] * (now - prev[2])       # carry the integrated target on
+            else:
+                tgt = p                                         # new run: start from the shaft
+            tgt = max(p - self.VEL_MAX_LAG_DEG, min(p + self.VEL_MAX_LAG_DEG, tgt))
+            new[ax] = (tgt, v_enc, now, timeout_s)
+        with self.lock:
+            self.cmd.update(new)
+            self.t_last_cmd = now
+            self.seq += 1
+            self.t_recv[self.seq] = now
+            if self._auto_stopping:                     # idle release was ramping down: carry on instead
+                self._stop = self._auto_stopping = False
+
     # ---- start / stop ------------------------------------------------------
-    def start(self):
+    def start(self, mode="track", auto_release_s=None):
         if self.running:
             return self.status()
         for ax, d in self.drv.items():
@@ -207,14 +256,17 @@ class Tracker:
                 raise RuntimeError(f"{ax} encoder not responding")
             self.bus.health(d.addr, ax)               # refuse to start hot / faulted / silent
         self.fault = None
-        self._stop = self._estop = False
+        self._stop = self._estop = self._auto_stopping = False
         self.cmd = {ax: None for ax in AXES}
         self.ab = {ax: None for ax in AXES}
         self.t_last_cmd = None
         self.lat_ms.clear()
         self.loop_ms.clear()
+        self.mode = mode
+        self.auto_release_s = auto_release_s
+        self.v_now = {ax: 0.0 for ax in AXES}
         for ax, d in self.drv.items():
-            d.owner = "tracker"
+            d.owner = "tracker" if mode == "track" else "vel mode"
         try:
             for ax, d in self.drv.items():
                 d.actual_ma = self.bus.setup(d.addr, self.cfg[f"ma_{ax}"])
@@ -254,7 +306,7 @@ class Tracker:
         for ax in AXES:
             a, p = self.enc.abs_deg(ax, n=15), self.enc.pos_deg(ax, n=15)
             abs_off[ax] = None if a is None or p is None else a - p
-        t_prev = t_send = t_health = time.monotonic()
+        t_prev = t_send = t_health = t_start = time.monotonic()
         health_i = 0
         try:
             while True:
@@ -267,7 +319,8 @@ class Tracker:
                     cmds = dict(self.cmd)
                     t_cmd = self.t_last_cmd
                     seq = self.seq
-                watchdog = t_cmd is None or t0 - t_cmd > cfg["watchdog_s"]
+                if self.auto_release_s and not self._stop and t0 - (t_cmd or t_start) > self.auto_release_s:
+                    self._stop = self._auto_stopping = True     # vel mode idle: ramp down, release
                 want = {}
                 for ax in AXES:
                     # commanded output travel since the last encoder change (stuck guard)
@@ -290,11 +343,12 @@ class Tracker:
                                          f"{cmd_since_change[ax]:.2f} deg")
                     c = cmds.get(ax)
                     vff = 0.0
-                    if self._stop or watchdog or c is None:
+                    expired = c is None or t0 - c[2] > (cfg["watchdog_s"] if c[3] is None else c[3])
+                    if self._stop or expired:
                         v = 0.0
                         e = None
                     else:
-                        tgt, vff, tc = c
+                        tgt, vff, tc, _ = c
                         tgt_now = tgt + vff * (t0 - tc)
                         e = tgt_now - p
                         v = vff + cfg["kp"] * e
@@ -333,6 +387,10 @@ class Tracker:
                     target_v = tu.out_dps_to_vactual(ax, want[ax])
                     step = cfg["accel"] * vpd[ax] * dt
                     new[ax] = int(round(cur[ax] + max(-step, min(step, target_v - cur[ax]))))
+                    v_out = tu.vactual_to_out_dps(ax, new[ax])
+                    self.v_now[ax] = v_out
+                    if abs(v_out) > 1e-3:
+                        self.drv[ax].last_dir = 1 if v_out > 0 else -1   # motor side of the gear gap (nudges)
                 if new != cur or t0 - t_send >= self.RESEND_S:
                     self.bus.w_many_fast([(self.drv[ax].addr, tu.REG_VACTUAL, new[ax]) for ax in AXES])
                     t_send = time.monotonic()
@@ -383,4 +441,5 @@ class Tracker:
                     print(f"Tracker: {ax} stop not confirmed -- CUT MOTOR POWER", flush=True)
                 d.owner = None
             self.running = False
-            self._stop = False
+            self._stop = self._auto_stopping = False
+            self.v_now = {ax: 0.0 for ax in AXES}
