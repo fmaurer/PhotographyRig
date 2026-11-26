@@ -62,7 +62,7 @@ HEALTH_EVERY_S = 1.0
 RESEND_S = 0.2                 # re-send unchanged VACTUAL this often (unverified writes can drop)
 LOOP_DT = 0.005
 NUDGE_MAX_DEG = 0.12           # moves at or below this (pan 257 / tilt 97 steps) may run open loop
-NUDGE_DPS = 0.25               # open-loop nudge speed at the output
+NUDGE_DPS = 0.5                # open-loop nudge speed at the output (max nudge 0.24 s)
 # Faster closed-loop profile for the follower's "move" (UI pan/tilt keep max_dps/accel):
 # crosses the pan gear gap and slews ~3.4x faster than the 2.9 deg/s UI speed.
 BRAKE_FRAC = 0.6
@@ -120,6 +120,9 @@ class TMC2209Driver(MotorDriver):
         self.owner = None                   # "tracker" while tracking mode drives this axis
         self.on_alert = None                # callback(axis, message) when a move stops on an error
         self._move_lock = threading.Lock()
+        self._rt_lock = threading.Lock()
+        self._accepting = False             # a closed-loop move is in its main loop (retarget possible)
+        self._retarget = None
         self._configured = False
         self._zero_deg = None
         self._last_steps = 0
@@ -194,8 +197,10 @@ class TMC2209Driver(MotorDriver):
         number = int(number)
         if number == 0:
             return
-        with self._move_lock:
-            gen = self._gen
+        gen = self._gen                      # taken BEFORE waiting for the lock: a newer command
+        with self._move_lock:                # (stop_movement bumps _gen) makes this one stale
+            if gen != self._gen:
+                return                       # superseded while waiting: never run a stale move late
             self._estop = False
             try:
                 deg = self.step_sign * number / self.steps_per_deg
@@ -207,7 +212,7 @@ class TMC2209Driver(MotorDriver):
             except Exception as e:
                 self.last_error = str(e)
                 self.last_error_t = time.time()
-                print(f"TMC2209 {self.axis}: move stopped: {e}")
+                print(f"{time.strftime('%H:%M:%S')} TMC2209 {self.axis}: move stopped: {e}")
                 if self.on_alert and "STOP command" not in str(e):
                     try:
                         self.on_alert(self.axis, str(e))
@@ -250,6 +255,35 @@ class TMC2209Driver(MotorDriver):
             if not self.bus.w(self.addr, tu.REG_IHOLD_IRUN, (cs // 2) | (cs << 8) | (6 << 16)):
                 raise MoveError("current write not acknowledged")
 
+    def retarget(self, number):
+        """Give the RUNNING closed-loop move a new target: current position + number
+        steps, without stopping (a follower sending relative moves at frame rate).
+        False if no move is in its main loop (caller starts a new one)."""
+        with self._rt_lock:
+            if not self._accepting:
+                return False
+            self._retarget = int(number)
+            return True
+
+    def _plan_deg(self, deg, a):
+        """Clamp a move of deg (encoder frame) from absolute angle a to the travel limits.
+        Raises if it starts outside and would go further out."""
+        if abs(deg) > self.max_move_deg:
+            raise MoveError(f"move of {deg:+.2f} deg exceeds max_move_deg {self.max_move_deg:g}; refused")
+        if not self.travel_limits or a is None:
+            return deg
+        lo, hi = self.travel_limits
+        a_tgt = a + deg
+        if a_tgt > hi - LIMIT_BACKOFF_DEG or a_tgt < lo + LIMIT_BACKOFF_DEG:
+            if a > hi - LIMIT_BACKOFF_DEG and deg > 0 or a < lo + LIMIT_BACKOFF_DEG and deg < 0:
+                raise MoveError(f"{self.axis} at {a:.2f} deg, at/outside travel limits [{lo:g}, {hi:g}]; "
+                                f"only moves back inside are allowed")
+            clamped = min(max(a_tgt, lo + LIMIT_BACKOFF_DEG), hi - LIMIT_BACKOFF_DEG)
+            print(f"TMC2209 {self.axis}: target {a_tgt:.2f} deg outside travel limits [{lo:g}, {hi:g}]; "
+                  f"clamped to {clamped:.2f}")
+            deg = clamped - a
+        return deg
+
     def _move(self, number, gen, profile=None):
         if self.owner:
             raise MoveError(f"{self.owner} is driving {self.axis}; send track_stop first")
@@ -259,7 +293,7 @@ class TMC2209Driver(MotorDriver):
         deg = self.step_sign * number / self.steps_per_deg       # encoder-frame output degrees
         if abs(deg) > self.max_move_deg:
             raise MoveError(f"move of {deg:+.2f} deg exceeds max_move_deg {self.max_move_deg:g}; refused")
-        start = self._pos(n=15)              # ~75 ms average: start error is part of the landing error
+        start = self._pos(n=15)              # average of the last 15 samples (~75 ms): start error is part of the landing error
         if start is None:
             raise MoveError(f"{self.axis} encoder not responding; moves need it")
         if self._zero_deg is None:
@@ -270,18 +304,9 @@ class TMC2209Driver(MotorDriver):
             if a is None:
                 raise MoveError(f"{self.axis} travel limits set but no absolute angle (encoder zero missing?)")
             abs_off = a - start
-            lo, hi = self.travel_limits
-            a_tgt = a + deg
-            if a_tgt > hi - LIMIT_BACKOFF_DEG or a_tgt < lo + LIMIT_BACKOFF_DEG:
-                if a > hi - LIMIT_BACKOFF_DEG and deg > 0 or a < lo + LIMIT_BACKOFF_DEG and deg < 0:
-                    raise MoveError(f"{self.axis} at {a:.2f} deg, at/outside travel limits [{lo:g}, {hi:g}]; "
-                                    f"only moves back inside are allowed")
-                clamped = min(max(a_tgt, lo + LIMIT_BACKOFF_DEG), hi - LIMIT_BACKOFF_DEG)
-                print(f"TMC2209 {self.axis}: target {a_tgt:.2f} deg outside travel limits [{lo:g}, {hi:g}]; "
-                      f"clamped to {clamped:.2f}")
-                deg = clamped - a
-                if abs(deg) < self.tol:
-                    return
+            deg = self._plan_deg(deg, a)
+            if abs(deg) < self.tol:
+                return
         target = start + deg
         self.target_steps = int(round((start - self._zero_deg) * self.steps_per_deg * self.step_sign)) + \
             int(round(self.step_sign * deg * self.steps_per_deg))
@@ -297,10 +322,13 @@ class TMC2209Driver(MotorDriver):
 
         self.is_moving = True
         self._cur = 0
+        with self._rt_lock:                  # accept retargets from now on (applied in the loop),
+            self._retarget, self._accepting = None, True   # even during the setup below
         t0 = last = last_send = last_health = time.monotonic()
         lost_since = health_fail_since = None
         cmd_travel = 0.0                     # integrated commanded output travel (deg, encoder frame)
         last_p, cmd_at_change = None, 0.0    # stuck guard
+        superseded = False
         try:
             self._ensure_setup()
             while True:
@@ -311,7 +339,23 @@ class TMC2209Driver(MotorDriver):
                 if gen != self._gen:
                     if self._estop:
                         raise MoveError("stopped by STOP command")
+                    superseded = True
                     break                    # stop_movement() / superseded: ramp down
+                with self._rt_lock:
+                    rt, self._retarget = self._retarget, None
+                if rt is not None:           # new relative target from here, keep moving
+                    p_rt = self._pos()
+                    if p_rt is not None:
+                        d_new = self._plan_deg(self.step_sign * rt / self.steps_per_deg,
+                                               None if abs_off is None else p_rt + abs_off)
+                        start, deg, target = p_rt, d_new, p_rt + d_new
+                        self.target_steps = int(round((target - self._zero_deg) * self.steps_per_deg * self.step_sign))
+                        t0 = now
+                        timeout = abs(deg) / vmax * 2.0 + 3.0 + vmax / accel
+                        travel_lim = abs(deg) + TRAVEL_MARGIN_DEG
+                        cmd_travel, last_p, cmd_at_change = 0.0, None, 0.0
+                        if abs(deg) < self.tol:
+                            break
                 if now - t0 > timeout:
                     raise MoveError(f"timed out after {timeout:.1f} s")
                 p = self._pos()
@@ -367,6 +411,8 @@ class TMC2209Driver(MotorDriver):
                 if x:
                     self.last_dir = 1 if tu.vactual_to_out_dps(self.axis, x) > 0 else -1
                 time.sleep(LOOP_DT)
+            with self._rt_lock:
+                self._accepting = False          # from here on a new move starts its own loop
             # decelerate to a stop at the same acceleration
             t_r = time.monotonic()
             while self._cur != 0:
@@ -377,14 +423,17 @@ class TMC2209Driver(MotorDriver):
                 t_r = now_r
                 self._send(self._cur - max(-step, min(step, self._cur)))
                 time.sleep(0.005)
-            time.sleep(0.1)
-            p = self._pos(n=15)
-            self.last_miss_deg = None if p is None else round(target - p, 3)
+            if not superseded:               # a newer command is waiting: hand over without the settle
+                time.sleep(0.1)
+                p = self._pos(n=15)
+                self.last_miss_deg = None if p is None else round(target - p, 3)
         except Exception:
             self.bus.zero_now([self.addr])   # SAFETY: unverified stop first, no reads
             self._cur = 0
             raise
         finally:
+            with self._rt_lock:
+                self._accepting = False
             try:
                 self.bus.stop_verified(self.addr, release=not self.hold_after_move)
             finally:
@@ -416,8 +465,12 @@ class TMC2209Driver(MotorDriver):
         self.is_moving = True
         try:
             self._ensure_setup()
+            t_a = time.monotonic()
             self._send(tu.out_dps_to_vactual(self.axis, math.copysign(NUDGE_DPS, deg)))
-            t_end = time.monotonic() + dur
+            t_b = time.monotonic()
+            # motion runs from the end of this write to the end of the stop write:
+            # send the stop one write-time early
+            t_end = t_b + dur - (t_b - t_a)
             while True:
                 rest = t_end - time.monotonic()
                 if rest <= 0:

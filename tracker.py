@@ -269,8 +269,12 @@ class Tracker:
             d.owner = "tracker" if mode == "track" else "vel mode"
         try:
             for ax, d in self.drv.items():
-                d.actual_ma = self.bus.setup(d.addr, self.cfg[f"ma_{ax}"])
-                d._configured = True
+                ma = self.cfg[f"ma_{ax}"]
+                if getattr(d, "_configured", False) and ma == d.current_ma and hasattr(d, "_ensure_setup"):
+                    d._ensure_setup()            # already configured: just the current (much faster)
+                else:
+                    d.actual_ma = self.bus.setup(d.addr, ma)
+                    d._configured = True
         except Exception:
             for d in self.drv.values():
                 d.owner = None
@@ -441,5 +445,7 @@ class Tracker:
                     print(f"Tracker: {ax} stop not confirmed -- CUT MOTOR POWER", flush=True)
                 d.owner = None
             self.running = False
+            print(f"{time.strftime('%H:%M:%S')} Tracker ({self.mode}) ended"
+                  f"{': ' + self.fault if self.fault else (' (idle release)' if self._auto_stopping else '')}", flush=True)
             self._stop = self._auto_stopping = False
             self.v_now = {ax: 0.0 for ax in AXES}

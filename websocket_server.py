@@ -102,6 +102,7 @@ class WebSocketServer:
         # wind down. STOP bumps _stop_gen; queued moves from before it are dropped.
         self._motion_exec = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="motion")
         self._stop_gen = 0
+        self._move_seq = {}
         self._vel_pending = None
         self._vel_starting = False
         # SAFETY: after STOP or a vel-mode fault the follower's vel stream (every
@@ -1203,7 +1204,9 @@ class WebSocketServer:
                 # UI's setInterval and don't carry useful information per-call.
                 _command_word = message.split(None, 1)[0] if message else ""
                 if _command_word not in _QUIET_LOG_COMMANDS:
-                    print(f"Received message: {message}")
+                    _t = time.time()
+                    print(f"{time.strftime('%H:%M:%S', time.localtime(_t))}.{int(_t * 1000) % 1000:03d} "
+                          f"Received message: {message}")
                 parts = message.split()
                 if len(parts) < 1:
                     await websocket.send("Error: Empty message")
@@ -1770,10 +1773,12 @@ class WebSocketServer:
                 result[name] = f"error: {e!r} - cut motor power"
         return {"ok": all(v == "stopped" for v in result.values()), **result}
 
-    def _start_axis_sync(self, axis, steps, stop_gen, profile=None):
+    def _start_axis_sync(self, axis, steps, stop_gen, profile=None, seq=None):
         """Worker thread: end a vel session, cancel the axis's running move, start the new one."""
         if stop_gen != self._stop_gen:
             return                                   # STOP arrived after this move was queued
+        if seq is not None and seq != self._move_seq.get(axis):
+            return                                   # a newer move for this axis is queued: it replaces this one
         tr = getattr(self, "tracker", None)
         if tr is not None and tr.running and tr.mode == "vel":
             tr.stop()                                # a move ends the follower's vel session (ramp, release)
@@ -1781,6 +1786,11 @@ class WebSocketServer:
         attr = "current_pan_movement" if axis == "pan" else "current_tilt_movement"
         with self.movement_lock:
             cur = getattr(self, attr)
+            # A move is running: give it the new target (current position + steps) without
+            # stopping, so moves sent at frame rate steer smoothly ("a new move replaces the
+            # running one"). 0 steps = stop there.
+            if cur and cur.is_alive() and hasattr(mc.driver, "retarget") and mc.driver.retarget(steps):
+                return
             if cur and cur.is_alive():
                 mc.driver.stop_movement()
                 cur.join(timeout=0.1)
@@ -1794,8 +1804,9 @@ class WebSocketServer:
             th.start()
 
     async def _start_axis(self, axis, steps, wait=True, profile=None):
+        seq = self._move_seq[axis] = self._move_seq.get(axis, 0) + 1   # newest command per axis wins
         fut = asyncio.get_running_loop().run_in_executor(
-            self._motion_exec, self._start_axis_sync, axis, steps, self._stop_gen, profile)
+            self._motion_exec, self._start_axis_sync, axis, steps, self._stop_gen, profile, seq)
         if wait:
             await fut
         else:
@@ -1822,7 +1833,10 @@ class WebSocketServer:
         try:
             if stop_gen != self._stop_gen:
                 return
+            t_s = time.monotonic()
             self.tracker.start(mode="vel", auto_release_s=2.0)
+            print(f"{time.strftime('%H:%M:%S')} vel session started ({(time.monotonic() - t_s) * 1000:.0f} ms), "
+                  f"first vel {self._vel_pending}", flush=True)
             if stop_gen != self._stop_gen:          # STOP while starting: undo
                 self.tracker.request_estop()
                 return
