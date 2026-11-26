@@ -174,5 +174,24 @@ for lash in (0.0, 1.2):
           f"moved {d_f:+.3f} (UI {d_ui:+.3f}) peak {plant.peak_speed['pan']:.1f} deg/s")
     plant.stop = True
 
+# 13. home survives a restart: save abs home, move away, new driver objects (restart), restore
+fake, bus, enc, plant, pan, tilt, tr = setup()
+home = {"pan": pan.abs_home_here(), "tilt": tilt.abs_home_here()}
+pan.step_to(-4292); tilt.step_to(1610)                       # UI pan -2 deg, tilt +2 deg
+c_before = (pan.total_signed_steps, tilt.total_signed_steps)
+pan2 = TD.TMC2209Driver(bus, enc, "pan", 0.00008, 2146, step_sign=-1)
+tilt2 = TD.TMC2209Driver(bus, enc, "tilt", 0.00035, 805, step_sign=-1)
+check("restart without restore: counters restart at 0 (the old problem)", pan2.total_signed_steps == 0)
+pan2._zero_deg = tilt2._zero_deg = None
+c_after = (pan2.restore_abs_home(home["pan"]), tilt2.restore_abs_home(home["tilt"]))
+check("restart with restore: same counters as before the restart (within 1 count)",
+      abs(c_after[0] - c_before[0]) <= 189 and abs(c_after[1] - c_before[1]) <= 71,
+      f"before {c_before} after {c_after}")
+pan2.step_to(-c_after[0]); tilt2.step_to(-c_after[1])     # back to home by counters
+check("move to counters (0,0) after restart returns to the saved home (within 0.1 deg)",
+      abs(enc.abs_deg("pan", n=15) - home["pan"]) < 0.1 and abs(enc.abs_deg("tilt", n=15) - home["tilt"]) < 0.1,
+      f"pan {enc.abs_deg('pan', n=15) - home['pan']:+.3f} tilt {enc.abs_deg('tilt', n=15) - home['tilt']:+.3f}")
+plant.stop = True
+
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")
 sys.exit(0 if all(ok for _, ok in results) else 1)

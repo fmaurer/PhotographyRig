@@ -158,6 +158,22 @@ class TMC2209Driver(MotorDriver):
         self._zero_deg = p - self.step_sign * float(value) / self.steps_per_deg
         self._last_steps = int(value)
 
+    def abs_home_here(self):
+        """Zero the counters here and return this position's ABSOLUTE output angle
+        (encoders.abs_deg, survives restarts), or None if there is no absolute zero."""
+        self.reset_step_counter(0)
+        return self.enc.abs_deg(self.axis, n=15)
+
+    def restore_abs_home(self, abs_home_deg):
+        """Set the counters so that abs_home_deg (from abs_home_here) reads 0 again.
+        Returns the counter value of the current position."""
+        p, a = self._pos(n=15), self.enc.abs_deg(self.axis, n=15)
+        if p is None or a is None:
+            raise RuntimeError(f"{self.axis} encoder not responding; can't restore the home counter zero")
+        self._zero_deg = p - (a - float(abs_home_deg))
+        self._last_steps = int(round((p - self._zero_deg) * self.steps_per_deg * self.step_sign))
+        return self._last_steps
+
     def set_soft_limits(self, min_steps=None, max_steps=None):
         self.soft_limits = None if min_steps is None and max_steps is None else (
             -math.inf if min_steps is None else min_steps,

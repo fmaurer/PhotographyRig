@@ -222,6 +222,8 @@ class WebSocketServer:
                 mc.driver.on_alert = _alert
         if self.tracker is not None:
             self.tracker.on_alert = _alert
+        self._home_info = None
+        self._restore_home()
         self.start_server()
         print("Websocket server started")
         self.last_photo_path = ''
@@ -779,6 +781,59 @@ class WebSocketServer:
         state.update(self._motion_state())
         return state
 
+    # ---- home that survives restarts ---------------------------------------
+    HOME_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pointing_home.json")
+
+    def _home_here_and_save(self):
+        """home_pointing: zero both counters here; with absolute encoders also save
+        this position's absolute angles so a restart restores the same zero."""
+        drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
+        if not all(hasattr(d, "abs_home_here") for d in drivers.values()):
+            for d in drivers.values():
+                d.reset_step_counter()
+            return None
+        abs_home = {ax: d.abs_home_here() for ax, d in drivers.items()}
+        if any(v is None for v in abs_home.values()):
+            self._home_info = None
+            return None
+        enc = drivers["pan"].enc
+        rec = {"abs_deg": {ax: round(v, 4) for ax, v in abs_home.items()},
+               "encoder_zero_raw": dict(enc.zero_raw),
+               "set_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        tmp = self.HOME_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(rec, f, indent=2)
+        os.replace(tmp, self.HOME_FILE)
+        self._home_info = rec
+        print(f"home_pointing: home saved at absolute pan {abs_home['pan']:+.3f} tilt {abs_home['tilt']:+.3f} deg", flush=True)
+        return abs_home
+
+    def _restore_home(self):
+        """Start-up: if a home was saved, make the counters read 0 there again."""
+        drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
+        if not os.path.exists(self.HOME_FILE) or not all(hasattr(d, "restore_abs_home") for d in drivers.values()):
+            return
+        try:
+            with open(self.HOME_FILE) as f:
+                rec = json.load(f)
+            zero_now = drivers["pan"].enc.zero_raw
+            now_steps = {}
+            for _ in range(40):                          # encoders need a moment after start
+                if all(d.enc.abs_deg(ax, n=15) is not None for ax, d in drivers.items()):
+                    break
+                time.sleep(0.05)
+            for ax, d in drivers.items():
+                a = float(rec["abs_deg"][ax])
+                z_old, z_new = rec.get("encoder_zero_raw", {}).get(ax), zero_now.get(ax)
+                if z_old is not None and z_new is not None and z_old != z_new:   # rig_limits zero changed since
+                    a += (((z_old - z_new + 2048) % 4096) - 2048) * 360.0 / 4096.0
+                now_steps[ax] = d.restore_abs_home(a)
+            self._home_info = rec
+            print(f"home restored from {os.path.basename(self.HOME_FILE)} (set {rec.get('set_at')}): "
+                  f"counters now pan {now_steps['pan']}, tilt {now_steps['tilt']}", flush=True)
+        except Exception as e:
+            print(f"home NOT restored ({e}); counters start at 0 here -- send home_pointing at home", flush=True)
+
     def _motion_state(self):
         """Follower extras: rig clock, mode, per-axis moving / target / errors / encoder health."""
         drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
@@ -807,6 +862,7 @@ class WebSocketServer:
             "last_error": err,
             "encoder_ok": enc_ok,
             "tracker_fault": None if tr is None else tr.fault,
+            "home": getattr(self, "_home_info", None),
         }
 
     def _motion_params(self):
@@ -1351,9 +1407,14 @@ class WebSocketServer:
                 elif command == "get_pointing_state":
                     await self._send_pointing_state(websocket)
                 elif command == "home_pointing":
-                    self.motor_controller.driver.reset_step_counter()
-                    self.motor_controller_tilt.driver.reset_step_counter()
-                    await self._send_pointing_state(websocket, message="step counters zeroed")
+                    try:
+                        saved = await asyncio.to_thread(self._home_here_and_save)
+                        await self._send_pointing_state(
+                            websocket, message="step counters zeroed" + (
+                                f"; home saved (absolute pan {saved['pan']:+.3f}, tilt {saved['tilt']:+.3f} deg), "
+                                f"kept across restarts" if saved else "; home NOT saved (no absolute encoder angle)"))
+                    except Exception as e:
+                        await self._send_pointing_state(websocket, ok=False, message=f"home_pointing failed: {e}")
                 elif command == "start_imu_axis_sweep":
                     if len(parts) != 3:
                         await websocket.send("Error: start_imu_axis_sweep requires <pan|tilt> <signed_steps>")
