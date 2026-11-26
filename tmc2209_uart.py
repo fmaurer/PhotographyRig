@@ -109,6 +109,33 @@ def tmc_write_reg(ser, node, reg, value):
     time.sleep(0.01)                             # tested timing; the faster variant was set aside as unsafe
 
 
+def tmc_write_datagram(node, reg, value):
+    value &= 0xFFFFFFFF
+    data = bytes([TMC_SYNC, node & 0xFF, (reg & 0x7F) | 0x80,
+                  (value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF])
+    return data + bytes([tmc_crc(data)])
+
+
+def tmc_write_many_fast(ser, writes):
+    """Send several write datagrams [(addr, reg, value), ...] in one serial write
+    and read back our own echo (single wire). The echo arriving means the bytes
+    are on the bus, so no flush() (~7 ms tcdrain on the Pi 5) and no settle
+    sleep are needed: ~1.5 ms for pan+tilt. Reading the echo keeps it out of the
+    next read. Unverified like any write (the TMC2209 doesn't reply to writes).
+    Returns True if the full echo came back intact."""
+    data = b"".join(tmc_write_datagram(a, r, v) for a, r, v in writes)
+    ser.reset_input_buffer()
+    ser.write(data)
+    echo = bytearray()
+    deadline = time.monotonic() + 0.02
+    while len(echo) < len(data) and time.monotonic() < deadline:
+        chunk = ser.read(len(data) - len(echo))
+        if not chunk:
+            break
+        echo += chunk
+    return bytes(echo) == data
+
+
 def current_to_cs(current_ma, rsense=0.11):
     irms = current_ma / 1000.0
     for vsense, vfs in ((1, 0.180), (0, 0.325)):
@@ -173,6 +200,12 @@ class TMC2209Bus:
         """Unverified write. Only for values re-sent every control cycle."""
         with self.lock:
             tmc_write_reg(self.ser, addr, reg, val)
+
+    def w_many_fast(self, writes):
+        """Fast batched write for control loops that re-send every cycle
+        (tmc_write_many_fast). Stops still use zero_now() + verified writes."""
+        with self.lock:
+            return tmc_write_many_fast(self.ser, writes)
 
     def zero_now(self, addrs=None, reps=3):
         """SAFETY: unverified VACTUAL=0 + run current 0. No reads, so it works on a sick bus."""

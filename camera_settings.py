@@ -27,6 +27,7 @@ DEFAULTS = {
         "AfMode": None,            # None|"manual"|"auto"|"continuous"
         "StreamSize": [1280, 720],
         "StillSize": [4056, 3040],
+        "FrameRate": 30.0,         # up to 50 in the 2028x1080 sensor mode (lower latency)
     },
     # cam1 — Arducam 64MP (Pivariety). Matches current rpicam-vid args:
     #   --shutter 1000 --hflip --vflip --lens-position 6 --autofocus-mode manual

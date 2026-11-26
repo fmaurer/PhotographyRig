@@ -72,6 +72,8 @@ def _find_mediamtx_binary():
 # log line to keep the server stdout readable. Add others here if more
 # polling endpoints are introduced.
 _QUIET_LOG_COMMANDS = frozenset({
+    "track",            # streamed at frame rate by the external tracker
+    "track_status",
     "get_pointing_state",
     "get_imu",
     "get_homography",
@@ -179,6 +181,12 @@ class WebSocketServer:
                   "live preview will be unavailable.")
 
         self.capture_process = None
+        # Streaming tracking mode (TMC2209 UART rig only).
+        self.tracker = None
+        if all(hasattr(mc.driver, "bus") for mc in (self.motor_controller, self.motor_controller_tilt)):
+            from tracker import Tracker
+            self.tracker = Tracker({"pan": self.motor_controller.driver,
+                                    "tilt": self.motor_controller_tilt.driver})
         self.start_server()
         print("Websocket server started")
         self.last_photo_path = ''
@@ -1409,6 +1417,36 @@ class WebSocketServer:
                             await websocket.send(f"record_stop {json.dumps(result)}")
                         except Exception as e:
                             await websocket.send(f"Error: record_stop failed: {e!r}")
+                elif command == "track":
+                    # track <err_pan_deg> <err_tilt_deg> [<v_pan_dps> <v_tilt_dps>] -- no reply (fast path)
+                    try:
+                        if self.tracker is None:
+                            raise RuntimeError("tracking needs the TMC2209 UART motors")
+                        vals = [float(x) for x in parts[1:]]
+                        if len(vals) not in (2, 4):
+                            raise ValueError("track <err_pan> <err_tilt> [<v_pan> <v_tilt>]")
+                        self.tracker.command(*vals)
+                    except Exception as e:
+                        await websocket.send(json.dumps({"type": "track_error", "message": str(e)}))
+                elif command in ("track_start", "track_stop", "track_status", "track_config"):
+                    try:
+                        if self.tracker is None:
+                            raise RuntimeError("tracking needs the TMC2209 UART motors")
+                        if command == "track_start":
+                            st = await asyncio.to_thread(self.tracker.start)
+                        elif command == "track_stop":
+                            st = await asyncio.to_thread(self.tracker.stop)
+                        elif command == "track_config":
+                            kv = dict(p.split("=", 1) for p in parts[1:])
+                            self.tracker.configure(**kv)
+                            st = self.tracker.status()
+                        else:
+                            st = self.tracker.status()
+                        await websocket.send(json.dumps({"type": command, "ok": True, **st}))
+                        if command != "track_status":
+                            print(f"{command}: running={st['running']} fault={st['fault']}", flush=True)
+                    except Exception as e:
+                        await websocket.send(json.dumps({"type": command, "ok": False, "message": str(e)}))
                 elif command == "stop":
                     # STOP button: cut both motors immediately (no ramp), then confirm.
                     result = await asyncio.to_thread(self.stop_all_motors)
@@ -1469,11 +1507,16 @@ class WebSocketServer:
         """Stop both axes now. Uses the driver's emergency_stop() (TMC2209:
         VACTUAL=0 + current 0, no ramp) or stop_movement() for older drivers."""
         drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
+        tracker = getattr(self, "tracker", None)
+        if tracker is not None and tracker.running:
+            tracker.request_estop()
         uart = [d for d in drivers.values() if hasattr(d, "request_estop")]
         for d in uart:                           # flag both moves to abort...
             d.request_estop(send=False)
         if uart:                                 # ...then one zero burst reaching both drivers at once
             uart[0].bus.zero_now([d.addr for d in uart])
+        if tracker is not None and tracker.thread is not None:
+            tracker.thread.join(1.0)             # its exit path confirms the stop and frees the axes
         result = {}
         for name, d in drivers.items():
             try:
@@ -1622,6 +1665,11 @@ class WebSocketServer:
         # Motors first: sys.exit() below escapes WebSocketServer.__init__, so
         # main.py's own cleanup never runs. cleanup() stops any move and
         # confirms VACTUAL=0 / current 0 (TMC2209) or EN high (TMC2208).
+        tracker = getattr(self, "tracker", None)
+        if tracker is not None and tracker.running:
+            tracker.request_estop()
+            if tracker.thread is not None:
+                tracker.thread.join(1.0)
         for mc in (self.motor_controller, self.motor_controller_tilt):
             try:
                 print(f"shutdown: stopping motor {getattr(mc.driver, 'axis', '?')}", flush=True)

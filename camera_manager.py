@@ -93,7 +93,9 @@ class _CameraStream:
             "ExposureTime": int(settings["ExposureTime"]),
             "AnalogueGain": float(settings["AnalogueGain"]),
             "AeEnable": bool(settings["AeEnable"]),
-            "FrameRate": 30.0,
+            # Lower latency: 50 fps (20 ms frames) works in the IMX477 2028x1080
+            # mode used here. Exposure can't exceed the frame time.
+            "FrameRate": float(settings.get("FrameRate", 30.0)),
         }
         if settings.get("AwbEnable") is not None:
             controls["AwbEnable"] = bool(settings["AwbEnable"])

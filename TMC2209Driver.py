@@ -98,6 +98,7 @@ class TMC2209Driver(MotorDriver):
 
         self._gen = 0
         self._estop = False
+        self.owner = None                   # "tracker" while tracking mode drives this axis
         self._move_lock = threading.Lock()
         self._configured = False
         self._zero_deg = None
@@ -198,6 +199,8 @@ class TMC2209Driver(MotorDriver):
                 raise MoveError("current write not acknowledged")
 
     def _move(self, number, gen):
+        if self.owner:
+            raise MoveError(f"{self.owner} is driving {self.axis}; send track_stop first")
         number = self._clamp_steps(number)
         if number == 0:
             return
