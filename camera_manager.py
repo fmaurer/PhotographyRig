@@ -26,6 +26,30 @@ from libcamera import Transform, controls as lc_controls
 
 import camera_settings
 
+# Pi 5 has no hardware H.264 encoder, so picamera2 maps H264Encoder to
+# LibavH264Encoder (software libx264). That class forces FRAME threading, which
+# makes x264 hold ~5 frames before emitting any output: measured on a Pi 5
+# with the HQ camera at 1280x720/30, frame -> encoded packet = 169 ms.
+# SLICE threading keeps zero frames in flight (5 ms). The codec context opens
+# lazily on the first frame, so changing thread_type after _start() works.
+try:
+    import av
+    from picamera2.encoders import LibavH264Encoder
+except ImportError:  # older picamera2 / no PyAV
+    LibavH264Encoder = None
+
+if LibavH264Encoder is not None and H264Encoder is LibavH264Encoder:
+    class _LowLatencyH264Encoder(LibavH264Encoder):
+        def _start(self):
+            super()._start()
+            try:
+                self._stream.codec_context.thread_type = av.codec.context.ThreadType.SLICE
+            except Exception as e:
+                print(f"camera_manager: could not switch x264 to slice threads ({e!r}); "
+                      f"stream will have ~5 frames of encoder latency")
+
+    H264Encoder = _LowLatencyH264Encoder
+
 
 AWB_MODE_ENUM = {
     "auto": lc_controls.AwbModeEnum.Auto,

@@ -135,8 +135,27 @@ def main():
     # Initialize the motor driver, swap out for new ones in future
  #   l298n_driver_1 = L298NDriver(pan_pins)
  #   l298n_driver_2 = L298NDriver(tilt_pins)
-    tmc2208_driver = TMC2208Driver(STEP_PIN, DIR_PIN, ENABLE_PIN, 0.000025)
-    tmc2208_driver_2 = TMC2208Driver(STEP_PIN_TILT, DIR_PIN_TILT, ENABLE_PIN_TILT, 0.0003)
+    # Half-period per step, in seconds. The driver now keeps time accurately;
+    # the old one asked for 25 us / 300 us but time.sleep() overshoots ~50 us,
+    # so the speeds you tuned were really ~80 us / ~350 us. These keep them.
+    PAN_STEP_DELAY = 0.00008
+    TILT_STEP_DELAY = 0.00035
+
+    # Optional safety / repeatability (off = None / 0, same as before):
+    #   SOFT_LIMITS: (min, max) steps from the counter zero (home_pointing).
+    #   APPROACH: (direction, overshoot_steps): always finish moves going this
+    #   way. If you enable it, turn off the browser backlash compensation.
+    PAN_SOFT_LIMITS = None
+    TILT_SOFT_LIMITS = None
+    PAN_APPROACH = (0, 0)
+    TILT_APPROACH = (0, 0)
+
+    tmc2208_driver = TMC2208Driver(STEP_PIN, DIR_PIN, ENABLE_PIN, PAN_STEP_DELAY,
+                                   soft_limits=PAN_SOFT_LIMITS,
+                                   approach_dir=PAN_APPROACH[0], approach_overshoot=PAN_APPROACH[1])
+    tmc2208_driver_2 = TMC2208Driver(STEP_PIN_TILT, DIR_PIN_TILT, ENABLE_PIN_TILT, TILT_STEP_DELAY,
+                                     soft_limits=TILT_SOFT_LIMITS,
+                                     approach_dir=TILT_APPROACH[0], approach_overshoot=TILT_APPROACH[1])
 
     # Initialize the motor controller with L298N driver
     pan_motor_controller = MotorController(tmc2208_driver)
