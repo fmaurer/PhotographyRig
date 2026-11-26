@@ -319,7 +319,7 @@ class Tracker:
                     gap = cfg[f"lash_{ax}"] * cfg["lash_comp"]
                     if (d and since_rev[ax] < gap and cfg["boost_dps"] > 0
                             and abs(vff) >= cfg["boost_min_ff"] and (vff > 0) == (d > 0)):
-                        v = max(-vmax - cfg["boost_dps"], min(vmax + cfg["boost_dps"], v + d * cfg["boost_dps"]))
+                        v = max(-vmax, min(vmax, v + d * cfg["boost_dps"]))   # max_dps stays a hard cap
                     want[ax] = v
                     self.state[ax] = {"pos": round(p, 3), "err": None if e is None else round(e, 3),
                                       "v_cmd": round(v, 2), "abs": None if abs_off[ax] is None else round(p + abs_off[ax], 2)}
