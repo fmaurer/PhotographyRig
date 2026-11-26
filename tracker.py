@@ -326,12 +326,14 @@ class Tracker:
                 if new != cur or t0 - t_send >= self.RESEND_S:
                     self.bus.w_many_fast([(self.drv[ax].addr, tu.REG_VACTUAL, new[ax]) for ax in AXES])
                     t_send = time.monotonic()
-                    if seq != self._seen_seq:
-                        for s_ in range(self._seen_seq + 1, seq + 1):
-                            tr = self.t_recv.pop(s_, None)
-                            if tr is not None:
-                                self.lat_ms.append((t_send - tr) * 1000.0)
-                        self._seen_seq = seq
+                # command receipt -> the cycle that acted on it (its VACTUAL written, if it changed anything)
+                if seq != self._seen_seq:
+                    t_done = time.monotonic()
+                    for s_ in range(self._seen_seq + 1, seq + 1):
+                        tr = self.t_recv.pop(s_, None)
+                        if tr is not None:
+                            self.lat_ms.append((t_done - tr) * 1000.0)
+                    self._seen_seq = seq
                 cur = new
                 if self._stop and all(v == 0 for v in cur.values()):
                     break
