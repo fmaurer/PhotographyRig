@@ -164,4 +164,32 @@ check("crossing the limit mid-move stops", "crossed travel limit" in (pan.last_e
       and plant.out["pan"] < 9.9 + 0.5 + 0.15, f"pan at {plant.out['pan']:.3f}; {pan.last_error}")
 plant.stop = True
 
+# 14. over-temperature: levels, hot mid-move, hot at start, alerts
+check("temp_level: flag bits -> levels", [tu.TMC2209Bus.temp_level(v) for v in (0, 0x1, 1 << 8, 1 << 9, 0x2, 1 << 10, 1 << 11)]
+      == [0, 1, 1, 2, 3, 3, 3])
+fake, bus, enc, plant, pan, tilt = rig()
+alerts = []
+pan.on_alert = lambda ax, m: alerts.append((ax, m))
+th = threading.Thread(target=pan.step_to, args=(2146 * 8,)); th.start(); time.sleep(1.0)
+fake.regs[0][tu.REG_DRV_STATUS] = 0x1 | (1 << 8)          # driver reports >=120 C
+ts = time.monotonic(); th.join(5)
+check("hot mid-move: stops within ~1.2 s, alert raised", "over-temperature" in (pan.last_error or "") and stopped(fake, 0)
+      and time.monotonic() - ts < 1.5 and alerts and alerts[-1][0] == "pan", f"{time.monotonic()-ts:.2f}s {pan.last_error}")
+st = bus.last_status.get(0, {})
+check("status cache shows level 1", st.get("level") == 1 and st.get("answering"))
+n0 = sum(1 for w in fake.writes if w[1] == 0 and w[2] == tu.REG_VACTUAL and w[3] != 0)
+pan.step_to(2146)
+n1 = sum(1 for w in fake.writes if w[1] == 0 and w[2] == tu.REG_VACTUAL and w[3] != 0)
+check("hot at start: move refused, motor not driven", "over-temperature" in (pan.last_error or "") and n1 == n0, pan.last_error)
+fake.regs[0][tu.REG_DRV_STATUS] = 0                           # cooled down
+pan.step_to(2146)
+check("cooled: moves work again", pan.last_error is None, pan.last_error)
+fake.dead.add(1)
+try:
+    bus.read_status(1); silent = False
+except IOError:
+    silent = bus.last_status.get(1, {}).get("answering") is False
+check("silent driver: read_status raises, cached as not answering", silent)
+fake.dead.clear(); plant.stop = True
+
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")

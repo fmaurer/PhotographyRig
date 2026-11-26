@@ -9,6 +9,7 @@ import socket
 import signal
 import sys
 import threading
+import queue
 import json
 import math
 import shutil
@@ -187,6 +188,16 @@ class WebSocketServer:
             from tracker import Tracker
             self.tracker = Tracker({"pan": self.motor_controller.driver,
                                     "tilt": self.motor_controller_tilt.driver})
+        # Driver temperature/fault monitor -> UI ("driver_status", "motor_alert").
+        self.alerts = queue.Queue()
+        self._driver_status_last = None
+        def _alert(source, message):
+            self.alerts.put({"source": source, "message": message, "time": time.strftime("%H:%M:%S")})
+        for mc in (self.motor_controller, self.motor_controller_tilt):
+            if hasattr(mc.driver, "on_alert"):
+                mc.driver.on_alert = _alert
+        if self.tracker is not None:
+            self.tracker.on_alert = _alert
         self.start_server()
         print("Websocket server started")
         self.last_photo_path = ''
@@ -1007,6 +1018,11 @@ class WebSocketServer:
         """Handle incoming WebSocket messages."""
         # Add client to tracking set
         self.connected_clients.add(websocket)
+        if getattr(self, "_driver_status_last", None) is not None:   # new page: show driver state at once
+            try:
+                await websocket.send(json.dumps({"type": "driver_status", **self._driver_status_last}))
+            except Exception:
+                pass
         print(f"Client connected. Total clients: {len(self.connected_clients)}")
 
         # Push any cached homography fit so the red-box overlay appears immediately.
@@ -1626,9 +1642,76 @@ class WebSocketServer:
         # Use os._exit() instead of sys.exit() to avoid asyncio issues
         os._exit(0)
 
+    async def _broadcast(self, text):
+        for client in list(self.connected_clients):
+            try:
+                await client.send(text)
+            except Exception:
+                self.connected_clients.discard(client)
+
+    def _driver_status_payload(self):
+        bus = getattr(self.motor_controller.driver, "bus", None)
+        out = {}
+        for name, d in (("pan", self.motor_controller.driver), ("tilt", self.motor_controller_tilt.driver)):
+            st = getattr(bus, "last_status", {}).get(getattr(d, "addr", None)) if bus else None
+            if not st:
+                out[name] = {"level": None, "label": "unknown", "answering": None, "short": False, "drv_err": False}
+            else:
+                lvl = st.get("level")
+                out[name] = {"level": lvl, "label": bus.TEMP_LABEL.get(lvl, "unknown") if st.get("answering") else "no answer",
+                             "answering": st.get("answering"), "short": st.get("short", False),
+                             "drv_err": st.get("drv_err", False)}
+        return out
+
+    async def _driver_monitor(self):
+        """Every 2 s: read idle drivers' status (fresh reads from moves/tracking are reused),
+        broadcast driver_status on change (and every 10 s), forward alerts at once."""
+        bus = getattr(self.motor_controller.driver, "bus", None)
+        if bus is None:
+            return
+        drivers = (("pan", self.motor_controller.driver), ("tilt", self.motor_controller_tilt.driver))
+        last_sent = 0.0
+        while True:
+            try:
+                for name, d in drivers:
+                    st = getattr(bus, "last_status", {}).get(d.addr) or {}
+                    if time.monotonic() - max(st.get("t", 0), st.get("t_fail", 0)) > 2.0:
+                        try:
+                            await asyncio.to_thread(bus.read_status, d.addr)
+                        except IOError:
+                            pass
+                payload = self._driver_status_payload()
+                prev = self._driver_status_last
+                for name in ("pan", "tilt"):
+                    p_new, p_old = payload[name], (prev or {}).get(name) or {}
+                    worse = ((p_new["level"] or 0) > (p_old.get("level") or 0) or
+                             (p_new["answering"] is False and p_old.get("answering") is not False) or
+                             (p_new["short"] and not p_old.get("short")) or (p_new["drv_err"] and not p_old.get("drv_err")))
+                    if prev is not None and worse:
+                        self.alerts.put({"source": name, "time": time.strftime("%H:%M:%S"),
+                                         "message": f"{name} driver: {p_new['label']}"
+                                                    + (", short-circuit flag" if p_new["short"] else "")
+                                                    + (", error latched" if p_new["drv_err"] else "")})
+                now = time.monotonic()
+                if payload != prev or now - last_sent > 10.0:
+                    if payload != prev:
+                        print(f"driver status: pan {payload['pan']['label']}, tilt {payload['tilt']['label']}", flush=True)
+                    await self._broadcast(json.dumps({"type": "driver_status", **payload}))
+                    self._driver_status_last, last_sent = payload, now
+                for _ in range(8):                       # forward alerts within 0.25 s
+                    while not self.alerts.empty():
+                        a = self.alerts.get_nowait()
+                        print(f"ALERT [{a['source']}] {a['message']}", flush=True)
+                        await self._broadcast(json.dumps({"type": "motor_alert", **a}))
+                    await asyncio.sleep(0.25)
+            except Exception as e:
+                print(f"driver monitor error: {e!r}", flush=True)
+                await asyncio.sleep(2.0)
+
     def start_server(self):
         async def start():
             async with websockets.serve(self.handler, "0.0.0.0", 8765):
+                asyncio.create_task(self._driver_monitor())
                 await asyncio.Future()  # run forever
         
         asyncio.run(start())

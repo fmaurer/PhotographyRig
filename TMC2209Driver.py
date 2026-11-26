@@ -99,6 +99,7 @@ class TMC2209Driver(MotorDriver):
         self._gen = 0
         self._estop = False
         self.owner = None                   # "tracker" while tracking mode drives this axis
+        self.on_alert = None                # callback(axis, message) when a move stops on an error
         self._move_lock = threading.Lock()
         self._configured = False
         self._zero_deg = None
@@ -166,6 +167,11 @@ class TMC2209Driver(MotorDriver):
             except Exception as e:
                 self.last_error = str(e)
                 print(f"TMC2209 {self.axis}: move stopped: {e}")
+                if self.on_alert and "STOP command" not in str(e):
+                    try:
+                        self.on_alert(self.axis, str(e))
+                    except Exception:
+                        pass
 
     def _clamp_steps(self, number):
         if not self.soft_limits:
@@ -185,7 +191,12 @@ class TMC2209Driver(MotorDriver):
         return x
 
     def _ensure_setup(self):
-        """Full setup after power-up or a driver reset, otherwise just restore the current."""
+        """Full setup after power-up or a driver reset, otherwise just restore the current.
+        Refuses (raises) if the driver is hot or faulted."""
+        try:
+            self.bus.check_ready(self.addr, self.axis)
+        except IOError:
+            raise MoveError(f"{self.axis} driver not answering on the UART")
         if self._configured:
             gs = self.bus.r(self.addr, tu.REG_GSTAT)
             if gs & 0x1:                     # driver was reset (motor power cycled): registers are back to defaults

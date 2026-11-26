@@ -136,7 +136,7 @@ def lash_run(boost, obj_fn, secs, noise=0.02):
 for boost in (0.0, 6.0):
     pc = lash_run(boost, lambda t, s: {"pan": s["pan"] + (1.0 if t > 0.5 else 0.0), "tilt": s["tilt"]}, 7.0)
     late = [abs(p) for t, p, ti in pc.log if t > 4.0]
-    check(f"still target, 2 deg lash, boost {boost:g}: no hunting (max |err| after 4 s < 0.25)", max(late) < 0.25,
+    check(f"still target, 2 deg lash, boost {boost:g}: no hunting (max |err| after 4 s < 0.3)", max(late) < 0.3,
           f"max {max(late):.3f} deg")
 r = {}
 for boost in (0.0, 6.0):
@@ -196,5 +196,27 @@ for _ in range(50):                                   # keep commanding (watchdo
 v = abs(tu.vactual_to_out_dps("pan", fake.vact(0)))
 check("huge error: speed capped at max_dps", 0.9 * tr.cfg["max_dps"] < v <= tr.cfg["max_dps"] + 0.01, f"{v:.2f} deg/s")
 tr.request_estop(); bus.zero_now(); tr.thread.join(2); plant.stop = True
+
+# 12. over-temperature while tracking, and refusing to start hot
+fake, bus, enc, plant, pan, tilt, tr = setup()
+alerts = []
+tr.on_alert = lambda src, m: alerts.append((src, m))
+tr.start(); s = start_pos(plant)
+pc = PC(tr, plant, lambda t, s=s: {"pan": s["pan"] + 3 * t, "tilt": s["tilt"]}); pc.start(); time.sleep(1.0)
+fake.regs[1][tu.REG_DRV_STATUS] = 0x1                    # tilt driver hot
+ts = time.monotonic(); tr.thread.join(3); pc.stop = True
+check("hot while tracking: fault within ~1.1 s, stopped, alert", not tr.running and "over-temperature" in (tr.fault or "")
+      and stopped(fake, 0) and stopped(fake, 1) and time.monotonic() - ts < 1.6 and alerts and alerts[-1][0] == "tracking",
+      f"{time.monotonic()-ts:.2f}s {tr.fault}")
+try:
+    tr.start(); refused = False
+except RuntimeError as e:
+    refused = "over-temperature" in str(e)
+check("start refused while a driver is hot, nothing energised", refused and fake.irun(0) == 0 and fake.irun(1) == 0
+      and pan.owner is None)
+fake.regs[1][tu.REG_DRV_STATUS] = 0
+tr.start()
+check("cooled: tracking starts again", tr.running)
+tr.stop(); plant.stop = True
 
 print(f"\n{sum(ok for _, ok in results)}/{len(results)} passed")

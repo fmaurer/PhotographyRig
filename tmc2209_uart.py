@@ -254,15 +254,55 @@ class TMC2209Bus:
                 except Exception:
                     pass
 
+    TEMP_LABEL = {0: "OK", 1: ">=120 C", 2: ">=143 C", 3: ">=150 C"}
+
+    @staticmethod
+    def temp_level(drv):
+        """0 OK (<120 C), 1 >=120 C (warning: moves stop here), 2 >=143 C, 3 >=150 C (shutdown).
+        The TMC2209 has no readable temperature, only these threshold flags."""
+        if drv & 0x2 or drv & (1 << 10) or drv & (1 << 11):
+            return 3
+        if drv & (1 << 9):
+            return 2
+        if drv & 0x1 or drv & (1 << 8):
+            return 1
+        return 0
+
+    def read_status(self, addr, tries=2):
+        """Read DRV_STATUS + GSTAT, cache and return {t, level, short, drv_err, drv, gstat}.
+        Raises IOError if the driver doesn't answer (cached as answering=False)."""
+        if not hasattr(self, "last_status"):
+            self.last_status = {}
+        try:
+            drv = self.r(addr, REG_DRV_STATUS, tries=tries)
+            gs = self.r(addr, REG_GSTAT, tries=tries)
+        except IOError:
+            prev = self.last_status.get(addr, {})
+            self.last_status[addr] = {**prev, "answering": False, "t_fail": time.monotonic()}
+            raise
+        st = {"t": time.monotonic(), "answering": True, "drv": drv, "gstat": gs,
+              "level": self.temp_level(drv), "short": bool(drv & 0x3C), "drv_err": bool(gs & 0x2)}
+        self.last_status[addr] = st
+        return st
+
+    def check_ready(self, addr, name, max_age=2.5):
+        """Before energising: raise if the driver is hot/faulted (cached status if fresh, else read)."""
+        st = getattr(self, "last_status", {}).get(addr)
+        if not st or not st.get("answering") or time.monotonic() - st.get("t", 0) > max_age:
+            self.health(addr, name)
+            return
+        if st["level"] or st["short"] or st["drv_err"]:
+            self.health(addr, name)      # re-read: raises if still hot/faulted
+
     def health(self, addr, name):
         """Raise on over-temperature, short, or latched driver error. IOError if it doesn't answer."""
-        drv = self.r(addr, REG_DRV_STATUS, tries=1)
-        gs = self.r(addr, REG_GSTAT, tries=1)
+        st = self.read_status(addr, tries=1)
+        drv, gs = st["drv"], st["gstat"]
         fix = "let it cool, add a heatsink/fan, or lower the current"
-        if drv & 0x2:
-            raise RuntimeError(f"{name} driver OVER-TEMPERATURE shutdown; {fix}")
-        if drv & 0x1:
-            raise RuntimeError(f"{name} driver over-temperature warning (~120 C); {fix}")
+        if st["level"] >= 3:
+            raise RuntimeError(f"{name} driver OVER-TEMPERATURE (>=150 C, shutdown); {fix}")
+        if st["level"] >= 1:
+            raise RuntimeError(f"{name} driver over-temperature warning ({self.TEMP_LABEL[st['level']]}); {fix}")
         if drv & 0x3C:
             raise RuntimeError(f"{name} driver short-circuit flag (0x{drv & 0x3C:02x}); check motor wiring")
         if gs & 0x2:

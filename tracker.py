@@ -64,7 +64,9 @@ class Tracker:
                                 # Only when the TARGET is moving the new way (see boost_min_ff):
                                 # boosting on small corrections around a still target made the rig
                                 # hunt with growing swings (live 2026-11-25).
-        "boost_min_ff": 0.3,    # deg/s: boost only if the velocity feedforward is at least this, same sign
+        "boost_min_ff": 0.6,    # deg/s: boost only if the velocity feedforward is at least this, same sign.
+                                # 0.3 let detector noise on a STILL target trigger it (sim: hold
+                                # jitter up to 0.40 deg); 0.6: mostly 0.05-0.08, worst 0.24.
         "auto_ff": 1.0,         # 1: estimate object velocity when the command carries none
         "ff_g": 0.5,            # alpha-beta filter gains for that estimate (position, velocity)
         "ff_h": 0.2,            # (swept in sim: 0.5/0.2 best, robust to 0.02 deg detector noise)
@@ -100,6 +102,7 @@ class Tracker:
         self.loop_ms = collections.deque(maxlen=500)
         self.hist = {ax: collections.deque(maxlen=400) for ax in AXES}   # (t, enc deg), ~2 s
         self.state = {}
+        self.on_alert = None                          # callback(source, message) on a fault stop
         self.ab = {ax: None for ax in AXES}           # alpha-beta filter state: (t, x, v) encoder frame
 
     # ---- config / status ---------------------------------------------------
@@ -202,6 +205,7 @@ class Tracker:
         for ax, d in self.drv.items():
             if self.enc.pos_deg(ax) is None:
                 raise RuntimeError(f"{ax} encoder not responding")
+            self.bus.health(d.addr, ax)               # refuse to start hot / faulted / silent
         self.fault = None
         self._stop = self._estop = False
         self.cmd = {ax: None for ax in AXES}
@@ -365,6 +369,11 @@ class Tracker:
             self.fault = str(e)
             self.bus.zero_now()                         # SAFETY: unverified stop first, no reads
             print(f"Tracker: stopped: {e}", flush=True)
+            if self.on_alert and "STOP command" not in str(e):
+                try:
+                    self.on_alert("tracking", str(e))
+                except Exception:
+                    pass
         finally:
             for ax, d in self.drv.items():
                 try:
