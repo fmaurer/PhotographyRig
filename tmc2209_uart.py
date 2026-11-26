@@ -240,8 +240,10 @@ class TMC2209Bus:
 class AS5600Encoders:
     """Polls both AS5600s (~150 Hz) in a thread. pos_deg() = unwrapped output angle (deg) since start."""
 
-    def __init__(self, buses=None, period=0.005):
+    def __init__(self, buses=None, period=0.005, zero_raw=None):
         self.buses = dict(ENC_BUS if buses is None else buses)
+        self.zero_raw = dict(zero_raw or {})        # raw count that abs_deg() calls 0
+        self.first_raw = {m: None for m in self.buses}
         self.period = period
         self.lock = threading.Lock()
         self.unw = {m: None for m in self.buses}
@@ -283,6 +285,7 @@ class AS5600Encoders:
             self.magnet[m] = magnet
             if self.unw[m] is None:
                 self.unw[m] = 0
+                self.first_raw[m] = raw
             else:
                 self.unw[m] += ((raw - self.last[m] + 2048) % 4096) - 2048
             self.last[m] = raw
@@ -318,3 +321,13 @@ class AS5600Encoders:
         if not items or time.monotonic() - items[-1][0] > max_age:
             return None
         return sum(c for _, c in items) / len(items) * 360.0 / 4096.0
+
+    def abs_deg(self, m, n=7, max_age=0.15):
+        """Absolute output angle (deg) from zero_raw: the AS5600 is absolute within
+        one output turn, so this survives restarts. Continuous (unwrapped) after
+        the first sample. None if stale or no zero is set for this axis."""
+        z, f = self.zero_raw.get(m), self.first_raw.get(m)
+        p = self.pos_deg(m, n=n, max_age=max_age)
+        if z is None or f is None or p is None:
+            return None
+        return (((f - z + 2048) % 4096) - 2048) * 360.0 / 4096.0 + p

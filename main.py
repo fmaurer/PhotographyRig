@@ -176,15 +176,25 @@ def main():
         # in websocket_server.py also stops them, before the cameras).
         import atexit
         atexit.register(motor_bus.zero_now)
-        encoders = tmc2209_uart.AS5600Encoders()
+        # Absolute travel limits (cable protection), from rig_limits.json.
+        limits_cfg = {}
+        try:
+            import json
+            with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rig_limits.json")) as f:
+                limits_cfg = json.load(f)
+        except FileNotFoundError:
+            print("WARNING: rig_limits.json not found -- NO travel limits")
+        lim = limits_cfg.get("limits_deg") or {}
+        encoders = tmc2209_uart.AS5600Encoders(zero_raw=limits_cfg.get("encoder_zero_raw"))
         tmc2208_driver = TMC2209Driver(motor_bus, encoders, "pan", PAN_STEP_DELAY, PAN_STEPS_PER_DEG,
                                        current_ma=1000, step_sign=PAN_STEP_SIGN,
-                                       soft_limits=PAN_SOFT_LIMITS)
+                                       soft_limits=PAN_SOFT_LIMITS, travel_limits=lim.get("pan"))
         tmc2208_driver_2 = TMC2209Driver(motor_bus, encoders, "tilt", TILT_STEP_DELAY, TILT_STEPS_PER_DEG,
                                          current_ma=1400, step_sign=TILT_STEP_SIGN,
-                                         soft_limits=TILT_SOFT_LIMITS)
+                                         soft_limits=TILT_SOFT_LIMITS, travel_limits=lim.get("tilt"))
         print(f"Motors: TMC2209 UART, pan {tmc2208_driver.max_dps:.2f} deg/s, "
-              f"tilt {tmc2208_driver_2.max_dps:.2f} deg/s max")
+              f"tilt {tmc2208_driver_2.max_dps:.2f} deg/s max; travel limits "
+              f"pan {lim.get('pan')} tilt {lim.get('tilt')} deg")
     elif MOTOR_BACKEND == "tmc2208_gpio":
         tmc2208_driver = TMC2208Driver(STEP_PIN, DIR_PIN, ENABLE_PIN, PAN_STEP_DELAY,
                                        soft_limits=PAN_SOFT_LIMITS,

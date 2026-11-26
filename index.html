@@ -798,6 +798,8 @@
             <div class="half-panel"><button onclick="sendCommand('pan', 150)">&#8678;</button></div>
             <div class="half-panel"><button onclick="sendCommand('pan', -150)">&#8680;</button></div>
 
+            <button onclick="stopMotors()" title="Stop both motors now (Esc)" style="width: 100%; margin-top: 6px; padding: 12px; background-color: #b80000; color: white; font-weight: bold; font-size: 18px; border: none; cursor: pointer;">STOP (Esc)</button>
+
             <button class="hidden" onclick="sendCommand('tilt', 1)">Tilt Up</button>
             <button class="hidden" onclick="sendCommand('tilt', -1)">Tilt Down</button>
         </div>
@@ -1021,6 +1023,20 @@
                 setTimeout(() => reconnectWebRTC(videoElement, path), 3000);
             }
         }
+
+        // STOP: cut both motors immediately (server: stop -> VACTUAL=0 + current 0). Escape key does the same.
+        function stopMotors() {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send("stop");
+                writeToConsole("Sent: stop");
+            } else {
+                writeToConsole("STOP NOT SENT: WebSocket is not connected -- cut motor power");
+                alert("STOP not sent: not connected to the rig. Cut motor power.");
+            }
+        }
+        document.addEventListener("keydown", function (e) {
+            if (e.key === "Escape") { stopMotors(); }
+        });
 
         function sendCommand(command, value) {
             if (socket.readyState === WebSocket.OPEN) {

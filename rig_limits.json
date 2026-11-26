@@ -1,0 +1,5 @@
+{
+  "_comment": "Travel limits for samwise, in output degrees from encoder_zero_raw (AS5600 raw counts, 0-4095). Zero = rig position on 2026-11-25. Limits are PLACEHOLDERS: set them to the real cable/mechanical range with tools/travel_limits.py. Set limits_deg to null to disable.",
+  "encoder_zero_raw": {"pan": 2709, "tilt": 2869},
+  "limits_deg": {"pan": [-90.0, 90.0], "tilt": [-45.0, 45.0]}
+}

@@ -1409,6 +1409,11 @@ class WebSocketServer:
                             await websocket.send(f"record_stop {json.dumps(result)}")
                         except Exception as e:
                             await websocket.send(f"Error: record_stop failed: {e!r}")
+                elif command == "stop":
+                    # STOP button: cut both motors immediately (no ramp), then confirm.
+                    result = await asyncio.to_thread(self.stop_all_motors)
+                    await websocket.send(json.dumps({"type": "motors_stopped", **result}))
+                    print(f"STOP command: {result}", flush=True)
                 else:
                     # Handle two-part commands (original format)
                     if len(parts) != 2:
@@ -1459,6 +1464,25 @@ class WebSocketServer:
             # Remove client from tracking set
             self.connected_clients.discard(websocket)
             print(f"Client disconnected. Total clients: {len(self.connected_clients)}")
+
+    def stop_all_motors(self):
+        """Stop both axes now. Uses the driver's emergency_stop() (TMC2209:
+        VACTUAL=0 + current 0, no ramp) or stop_movement() for older drivers."""
+        drivers = {"pan": self.motor_controller.driver, "tilt": self.motor_controller_tilt.driver}
+        uart = [d for d in drivers.values() if hasattr(d, "request_estop")]
+        for d in uart:                           # flag both moves to abort...
+            d.request_estop(send=False)
+        if uart:                                 # ...then one zero burst reaching both drivers at once
+            uart[0].bus.zero_now([d.addr for d in uart])
+        result = {}
+        for name, d in drivers.items():
+            try:
+                ok = (d.emergency_stop(requested=True) if hasattr(d, "emergency_stop")
+                      else d.stop_movement())
+                result[name] = "stopped" if ok else "NOT CONFIRMED - cut motor power"
+            except Exception as e:
+                result[name] = f"error: {e!r} - cut motor power"
+        return {"ok": all(v == "stopped" for v in result.values()), **result}
 
     async def cancel_and_start_pan(self, steps):
         """Cancel ongoing pan movement and start new one"""

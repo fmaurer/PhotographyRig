@@ -154,6 +154,7 @@
         <h3>Move</h3>
         <button onclick="toggleClickToMove()" id="click-to-move-btn" class="btn btn-green">Enable Click-to-Move</button>
         <span id="click-status" style="color: gray; font-size: 12px;">Disabled</span>
+        <button class="btn btn-red" onclick="stopMotors()" title="Stop both motors now (Esc)" style="margin-left:auto; font-weight:bold;">STOP (Esc)</button>
     </div>
 
     <!-- IMU -->
@@ -298,6 +299,20 @@
     let homePanSteps = 0, homeTiltSteps = 0, totalDistanceMoved = 0;
     // Backlash
     let lastPanDirection = 0, lastTiltDirection = 0;
+
+    // STOP: cut both motors immediately (server: stop -> VACTUAL=0 + current 0). Escape key does the same.
+    function stopMotors() {
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send("stop");
+            writeToConsole("Sent: stop");
+        } else {
+            writeToConsole("STOP NOT SENT: WebSocket is not connected -- cut motor power");
+            alert("STOP not sent: not connected to the rig. Cut motor power.");
+        }
+    }
+    document.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") { stopMotors(); }
+    });
 
     function sendCommand(command, value) {
         if (socket.readyState === WebSocket.OPEN) {

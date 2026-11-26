@@ -24,6 +24,8 @@ Safety (each one stops the move and the motor):
     last change exceeds the gear lash + 1 deg (frozen encoder)
   * encoder missing > 0.3 s, driver over-temperature/short/no answer, timeout
   * moves larger than max_move_deg are refused; speed capped at MAX_DPS
+  * optional absolute travel limits (rig_limits.json): targets clamped,
+    stop if crossed
 Every exit path sends VACTUAL=0 (unverified first, then verified).
 
 Not supported: backlash_calibration.py's raw step access (step_motor,
@@ -41,6 +43,8 @@ import tmc2209_uart as tu
 MAX_DPS = 10.0                 # hard cap on output speed (deg/s); rig tested to ~21 deg/s
 LASH_DEG = {"pan": 2.5, "tilt": 0.8}   # measured play at the output (pan ~2.3, tilt ~0.4-1.3)
 TRAVEL_MARGIN_DEG = 3.0
+LIMIT_OVERRUN_DEG = 0.5        # absolute travel limit: stop if crossed by this much
+LIMIT_BACKOFF_DEG = 0.2        # clamp targets this far inside the limit
 FOLLOW_SLACK_DEG = 1.0
 FOLLOW_SLACK_FRAC = 0.25       # covers the approximate GEAR ratio and slip (0.76-0.97x measured)
 STUCK_SLACK_DEG = 1.0          # stuck guard: commanded travel since the reading last changed > lash + this
@@ -58,11 +62,14 @@ class TMC2209Driver(MotorDriver):
     def __init__(self, bus, encoders, axis, step_delay, steps_per_deg,
                  current_ma=1000, step_sign=+1, soft_limits=None,
                  max_move_deg=30.0, accel_dps2=20.0, min_dps=0.6, kp=3.0,
-                 tol_deg=0.05, hold_after_move=False):
+                 tol_deg=0.05, hold_after_move=False, travel_limits=None):
         """bus: tmc2209_uart.TMC2209Bus (shared). encoders: AS5600Encoders (shared).
         axis: 'pan' or 'tilt'. step_sign: +1 if a positive UI step should
         increase the encoder angle, else -1 (check on the first move).
-        soft_limits: (min_steps, max_steps) from the counter zero, or None."""
+        soft_limits: (min_steps, max_steps) from the counter zero, or None.
+        travel_limits: (min_deg, max_deg) ABSOLUTE output angle (encoders.abs_deg,
+        survives restarts), or None. Moves are clamped to it, a move that starts
+        outside may only go back in, and the loop stops if it's crossed."""
         if axis not in tu.ADDR:
             raise ValueError(f"axis must be one of {list(tu.ADDR)}")
         self.bus, self.enc, self.axis = bus, encoders, axis
@@ -77,6 +84,7 @@ class TMC2209Driver(MotorDriver):
         self.tol = float(tol_deg)
         self.hold_after_move = hold_after_move
         self.soft_limits = tuple(soft_limits) if soft_limits else None
+        self.travel_limits = tuple(travel_limits) if travel_limits else None
 
         self.base_delay = step_delay
         self.max_dps = self._delay_to_dps(step_delay)
@@ -89,6 +97,7 @@ class TMC2209Driver(MotorDriver):
         self.last_miss_deg = None
 
         self._gen = 0
+        self._estop = False
         self._move_lock = threading.Lock()
         self._configured = False
         self._zero_deg = None
@@ -149,6 +158,7 @@ class TMC2209Driver(MotorDriver):
             return
         with self._move_lock:
             gen = self._gen
+            self._estop = False
             try:
                 self._move(number, gen)
                 self.last_error = None
@@ -199,6 +209,24 @@ class TMC2209Driver(MotorDriver):
             raise MoveError(f"{self.axis} encoder not responding; moves need it")
         if self._zero_deg is None:
             self._zero_deg = start
+        abs_off = None                       # absolute angle = encoder-frame angle + abs_off
+        if self.travel_limits:
+            a = self.enc.abs_deg(self.axis, n=15)
+            if a is None:
+                raise MoveError(f"{self.axis} travel limits set but no absolute angle (encoder zero missing?)")
+            abs_off = a - start
+            lo, hi = self.travel_limits
+            a_tgt = a + deg
+            if a_tgt > hi - LIMIT_BACKOFF_DEG or a_tgt < lo + LIMIT_BACKOFF_DEG:
+                if a > hi - LIMIT_BACKOFF_DEG and deg > 0 or a < lo + LIMIT_BACKOFF_DEG and deg < 0:
+                    raise MoveError(f"{self.axis} at {a:.2f} deg, at/outside travel limits [{lo:g}, {hi:g}]; "
+                                    f"only moves back inside are allowed")
+                clamped = min(max(a_tgt, lo + LIMIT_BACKOFF_DEG), hi - LIMIT_BACKOFF_DEG)
+                print(f"TMC2209 {self.axis}: target {a_tgt:.2f} deg outside travel limits [{lo:g}, {hi:g}]; "
+                      f"clamped to {clamped:.2f}")
+                deg = clamped - a
+                if abs(deg) < self.tol:
+                    return
         target = start + deg
         vmax = max(self.max_dps, self.min_dps)
         acc_v = abs(tu.out_dps_to_vactual(self.axis, self.accel))   # VACTUAL units per second
@@ -220,7 +248,9 @@ class TMC2209Driver(MotorDriver):
                 last = now
                 cmd_travel += tu.vactual_to_out_dps(self.axis, self._cur) * dt
                 if gen != self._gen:
-                    break                    # stop_movement() / superseded
+                    if self._estop:
+                        raise MoveError("stopped by STOP command")
+                    break                    # stop_movement() / superseded: ramp down
                 if now - t0 > timeout:
                     raise MoveError(f"timed out after {timeout:.1f} s")
                 p = self._pos()
@@ -231,6 +261,11 @@ class TMC2209Driver(MotorDriver):
                     want = 0.0
                 else:
                     lost_since = None
+                    if abs_off is not None:
+                        lo, hi = self.travel_limits
+                        a = p + abs_off
+                        if a > hi + LIMIT_OVERRUN_DEG or a < lo - LIMIT_OVERRUN_DEG:
+                            raise MoveError(f"{self.axis} crossed travel limit [{lo:g}, {hi:g}] at {a:.2f} deg")
                     if abs(p - start) > travel_lim:
                         raise MoveError(f"travel guard: {p - start:+.2f} deg from start (move {deg:+.2f})")
                     along = (p - start) * math.copysign(1, cmd_travel or deg)
@@ -267,6 +302,8 @@ class TMC2209Driver(MotorDriver):
                 time.sleep(LOOP_DT)
             # decelerate to a stop at the same acceleration
             while self._cur != 0:
+                if self._estop:
+                    raise MoveError("stopped by STOP command")
                 step = acc_v * 0.01
                 self._send(self._cur - max(-step, min(step, self._cur)))
                 time.sleep(0.01)
@@ -297,6 +334,30 @@ class TMC2209Driver(MotorDriver):
             self.bus.zero_now([self.addr])
             return False
         return True
+
+    def request_estop(self, send=True):
+        """Cut this axis now: flag the move to abort (no ramp) and, if send,
+        VACTUAL=0 + current 0 unverified. Doesn't wait. With send=False the
+        caller zeroes several axes in one burst (bus.zero_now())."""
+        self._estop = True
+        self._gen += 1
+        if send:
+            self.bus.zero_now([self.addr])
+
+    def emergency_stop(self, timeout=1.0, requested=False):
+        """STOP button: request_estop() (unless already requested), wait for the
+        move to end, then confirm VACTUAL=0 and current 0. True if confirmed."""
+        if not requested:
+            self.request_estop()
+        deadline = time.monotonic() + timeout
+        while self.is_moving and time.monotonic() < deadline:
+            time.sleep(0.005)
+        try:
+            self.bus.stop_verified(self.addr, release=True)
+            return not self.is_moving
+        except Exception as e:
+            print(f"TMC2209 {self.axis}: {e}")
+            return False
 
     # ---- speed / ramp configuration (API kept) -----------------------------
     def enable_ramping(self):
