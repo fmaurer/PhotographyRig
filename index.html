@@ -2977,18 +2977,23 @@
                 return;
             }
 
-            // Project through H to get the click in wide-sensor coords.
+            // H maps real zoom-frame pixels to real wide-frame pixels (frame
+            // sizes in the fit); click-to-move works in 1280x720 units of the
+            // wide view, so convert in and out.
             const H = lastHomographyData.H;
-            const [pxH, pyH, pwH] = _hApply3x3(H, zx, zy);
-            const pWideX = pxH / pwH;
-            const pWideY = pyH / pwH;
+            const [zW, zH] = lastHomographyData.zoom_size || [SENSOR_W, SENSOR_H];
+            const [wW, wH] = lastHomographyData.wide_size || [SENSOR_W, SENSOR_H];
+            const kx = SENSOR_W / wW, ky = SENSOR_H / wH;
+            const [pxH, pyH, pwH] = _hApply3x3(H, x / rect.width * zW, y / rect.height * zH);
+            const pWideX = pxH / pwH * kx;
+            const pWideY = pyH / pwH * ky;
 
-            // The zoom's current aim in wide-sensor coords (== H applied to the
-            // zoom-sensor center). Used to compute the offset that the wide
+            // The zoom's current aim in wide coords (== H applied to the
+            // zoom-frame center). Used to compute the offset that the wide
             // handler subtracts, so the motor math is identical to a wide click.
-            const [cxH, cyH, cwH] = _hApply3x3(H, SENSOR_W / 2, SENSOR_H / 2);
-            const offsetWideX = (cxH / cwH) - SENSOR_W / 2;
-            const offsetWideY = (cyH / cwH) - SENSOR_H / 2;
+            const [cxH, cyH, cwH] = _hApply3x3(H, zW / 2, zH / 2);
+            const offsetWideX = (cxH / cwH) * kx - SENSOR_W / 2;
+            const offsetWideY = (cyH / cwH) * ky - SENSOR_H / 2;
 
             // adjustedX: what handleCam1Click computes for an equivalent click —
             // the wide-coord target with the current-zoom-aim offset subtracted.
@@ -3146,8 +3151,11 @@
                 this.canvas = null;
                 this.ctx = null;
                 this.loaded = false;
-                this.HFOV_DEG = 42;
-                this.VFOV_DEG = 20;
+                // Wide view's angular size (the 1280x720 click space spans it).
+                // 42 x 20 was the old 720p sensor mode; the 1080p mode shows
+                // 1.5x more at the same pixel scale (measured 2026-11-26).
+                this.HFOV_DEG = 63;
+                this.VFOV_DEG = 30;
             }
             
             async loadLookupImage() {

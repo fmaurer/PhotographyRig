@@ -835,6 +835,10 @@ class WebSocketServer:
         )
         full_wide_size = [int(frame_wide.shape[1]), int(frame_wide.shape[0])]
         full_zoom_size = [int(frame_zoom.shape[1]), int(frame_zoom.shape[0])]
+        # The UI clicks are in 1280x720 units whatever the stream size; the fit
+        # (and the overlay, drawn in wide_size units) needs real frame pixels.
+        wide_pts = [[x * full_wide_size[0] / 1280.0, y * full_wide_size[1] / 720.0] for x, y in wide_pts]
+        zoom_pts = [[x * full_zoom_size[0] / 1280.0, y * full_zoom_size[1] / 720.0] for x, y in zoom_pts]
 
         debug_abs, debug_url = self._new_homography_debug_dir()
         try:

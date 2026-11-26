@@ -554,7 +554,7 @@
     class StepperMapping {
         constructor() {
             this.lookupImage = null; this.canvas = null; this.ctx = null;
-            this.loaded = false; this.HFOV_DEG = 42; this.VFOV_DEG = 20;
+            this.loaded = false; this.HFOV_DEG = 63; this.VFOV_DEG = 30;   // wide 1080p view (was 42 x 20 at 720p)
         }
         async loadLookupImage() {
             this.canvas = document.createElement('canvas');
