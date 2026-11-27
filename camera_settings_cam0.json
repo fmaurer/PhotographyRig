@@ -1,7 +1,7 @@
 {
-  "ExposureTime": 64565,
-  "AnalogueGain": 13.9,
-  "AeEnable": true,
+  "ExposureTime": 151356,
+  "AnalogueGain": 16.0,
+  "AeEnable": false,
   "AwbEnable": true,
   "AwbMode": "auto",
   "Transform": {
@@ -18,5 +18,12 @@
     4056,
     3040
   ],
-  "ExposureValue": -0.3
+  "FrameRate": 74.0,
+  "ExposureValue": 2.0,
+  "SensorMode": [
+    2028,
+    1080,
+    10
+  ],
+  "Bitrate": 4000000
 }

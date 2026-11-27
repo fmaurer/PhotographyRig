@@ -1,7 +1,7 @@
 {
-  "ExposureTime": 1000,
-  "AnalogueGain": 5.5,
-  "AeEnable": true,
+  "ExposureTime": 870964,
+  "AnalogueGain": 60.5,
+  "AeEnable": false,
   "AwbEnable": true,
   "AwbMode": "auto",
   "Transform": {
@@ -11,12 +11,13 @@
   "LensPosition": 6.0,
   "AfMode": "manual",
   "StreamSize": [
-    1280,
-    720
+    1920,
+    1080
   ],
   "StillSize": [
     9152,
     6944
   ],
-  "ExposureValue": 2.0
+  "ExposureValue": 1.8,
+  "Bitrate": 4000000
 }
