@@ -414,11 +414,13 @@
                     <input type="checkbox" id="ac-show" checked onchange="renderOverlay()"> Show overlay</label>
                 <label style="color: #aaa; font-size: 12px; align-self: center;">
                     <input type="checkbox" id="ac-show-paths" checked onchange="renderOverlay()"> Paths</label>
+                <label style="color: #aaa; font-size: 12px; align-self: center;">
+                    <input type="checkbox" id="ac-show-bands" checked onchange="renderOverlay()"> Detector bands</label>
             </div>
             <div id="ac-reply" style="font-size: 12px; color: #ccc; min-height: 16px; margin-bottom: 6px;"></div>
             <table id="ac-table" style="width: 100%; font-size: 12px; color: #ddd; border-collapse: collapse;">
                 <thead><tr style="color: #888; text-align: left;">
-                    <th>Callsign</th><th>ICAO</th><th>Where</th><th></th></tr></thead>
+                    <th></th><th>Callsign</th><th>ICAO</th><th>Where</th></tr></thead>
                 <tbody></tbody>
             </table>
             <div id="ac-det" style="font-size: 11px; color: #888; margin-top: 4px;"></div>
@@ -3713,6 +3715,50 @@
                     <line x1="${x - 2 * r}" y1="${y}" x2="${x - r}" y2="${y}" ${sw}/><line x1="${x + r}" y1="${y}" x2="${x + 2 * r}" y2="${y}" ${sw}/>
                     <line x1="${x}" y1="${y - 2 * r}" x2="${x}" y2="${y - r}" ${sw}/><line x1="${x}" y1="${y + r}" x2="${x}" y2="${y + 2 * r}" ${sw}/></g>`);
             }
+            // Detector filter bands (spec 3.3b): light fill between upper and lower,
+            // dashed edges, thin skyline, label once at the band's left end.
+            if (document.getElementById('ac-show-bands').checked && Array.isArray(f.bands)) {
+                const line = pts => (Array.isArray(pts) ? pts.filter(ovPt) : []);
+                const ptsStr = pts => pts.map(q => q[0] + ',' + q[1]).join(' ');
+                for (const b of f.bands) {
+                    if (!b || typeof b !== 'object') continue;
+                    const up = line(b.upper_px), sky = line(b.skyline_px), lo = line(b.lower_px);
+                    if (up.length >= 2 && lo.length >= 2) {
+                        out.push(`<polygon points="${ptsStr(up.concat(lo.slice().reverse()))}" fill="#FFD740" fill-opacity="0.08" stroke="none"/>`);
+                    }
+                    for (const pts of [up, lo]) if (pts.length >= 2) {
+                        out.push(`<polyline points="${ptsStr(pts)}" fill="none" stroke="#FFD740" stroke-width="1" stroke-dasharray="5 4" opacity="0.8" ${sw}/>`);
+                    }
+                    if (sky.length >= 2) {
+                        out.push(`<polyline points="${ptsStr(sky)}" fill="none" stroke="#FFD740" stroke-width="0.7" opacity="0.6" ${sw}/>`);
+                    }
+                    // Sun region: closed ring ~15 deg around the sun (detections dropped there).
+                    const ring = line(b.outline_px);
+                    if (ring.length >= 3) {
+                        out.push(`<polygon points="${ptsStr(ring)}" fill="#FFAB00" fill-opacity="0.12"
+                            stroke="#FFAB00" stroke-width="1.2" stroke-opacity="0.85" ${sw}/>`);
+                        if (ovPt(b.sun_px)) {
+                            const [sx, sy] = b.sun_px, r = 4 * u;
+                            out.push(`<circle cx="${sx}" cy="${sy}" r="${r}" fill="#FFD600" fill-opacity="0.7" stroke="#000" stroke-width="1" ${sw}/>`);
+                        }
+                        if (b.label) {   // above the ring's highest visible point
+                            const vis = ring.filter(p => p[0] >= 0 && p[0] <= OV_W && p[1] >= 0 && p[1] <= OV_H);
+                            const top = (vis.length ? vis : ring).reduce((a, p) => p[1] < a[1] ? p : a);
+                            const lx = Math.min(Math.max(top[0], 2 * u), OV_W - 2 * u);
+                            const ly = top[1] - 4 * u < fs ? Math.min(top[1] + fs + 2 * u, OV_H - 2 * u) : top[1] - 4 * u;
+                            const anchor = lx < OV_W * 0.25 ? 'start' : lx > OV_W * 0.75 ? 'end' : 'middle';
+                            out.push(`<text x="${lx}" y="${ly}" text-anchor="${anchor}" font-size="${fs * 0.8}" fill="#FFAB00" opacity="0.95"
+                                font-family="sans-serif" paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${ovEsc(b.label)}</text>`);
+                        }
+                    }
+                    if (b.label && up.length) {
+                        const q = up.find(p => p[0] >= 0 && p[0] <= OV_W && p[1] >= 0 && p[1] <= OV_H) || up[0];
+                        const lx = Math.min(Math.max(q[0], 2 * u), OV_W - 2 * u), ly = Math.min(Math.max(q[1] - 3 * u, fs), OV_H - 2 * u);
+                        out.push(`<text x="${lx}" y="${ly}" font-size="${fs * 0.8}" fill="#FFD740" opacity="0.9" font-family="sans-serif"
+                            paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${ovEsc(b.label)}</text>`);
+                    }
+                }
+            }
             // NN detections
             const d = f.detections;
             if (d && Array.isArray(d.items)) {
@@ -3740,25 +3786,29 @@
             // Radio aircraft
             for (const a of (f.aircraft || [])) {
                 const followed = ovIsFollowed(target, a.id);
-                const col = followed ? '#FFEB3B' : (a.zoom_fix ? '#69F0AE' : '#FF80AB');
-                const name = ovEsc(a.callsign || a.id);
+                // Coasting = no radio fix for > 3 s, position dead-reckoned: grey, dashed, dimmer, age in label.
+                const coast = a.state === 'coasting';
+                const col = followed ? '#FFEB3B' : coast ? '#B0BEC5' : (a.zoom_fix ? '#69F0AE' : '#FF80AB');
+                const op = coast ? 0.55 : 0.9;
+                const age = coast && Number.isFinite(a.radio_age_s) ? ' \u00b7 ' + Math.round(a.radio_age_s) + ' s' : '';
+                const name = ovEsc(a.callsign || a.id) + age;
                 if (ovPt(a.live_px)) {
                     const [x, y] = a.live_px;
                     if (showPaths) {
                         let pts = Array.isArray(a.path_px) && a.path_px.length >= 2 ? a.path_px.filter(ovPt) : null;
                         if (!pts && (a.vx || a.vy)) pts = [[x, y], [x + 8 * a.vx, y + 8 * a.vy]];
                         if (pts) out.push(`<polyline points="${pts.map(q => q[0] + ',' + q[1]).join(' ')}" fill="none"
-                            stroke="${col}" stroke-width="1" stroke-dasharray="3 3" opacity="0.8" ${sw}/>`);
+                            stroke="${col}" stroke-width="1" stroke-dasharray="${coast ? '2 5' : '3 3'}" opacity="${coast ? 0.5 : 0.8}" ${sw}/>`);
                     }
                     const bw = (a.box && a.box[0]) || 60, bh = (a.box && a.box[1]) || 60;
                     out.push(`<rect x="${x - bw / 2}" y="${y - bh / 2}" width="${bw}" height="${bh}" fill="none"
-                        stroke="${col}" stroke-width="${followed ? 2.5 : 1.2}" opacity="0.9" ${sw}/>`);
+                        stroke="${col}" stroke-width="${followed ? 2.5 : 1.2}" opacity="${op}" ${coast ? 'stroke-dasharray="8 5"' : ''} ${sw}/>`);
                     if (ovPt(a.zoom_fix)) {
                         const [zx, zy] = a.zoom_fix, r = 3 * u;
                         out.push(`<circle cx="${zx}" cy="${zy}" r="${r}" fill="${col}" stroke="#000" stroke-width="1" ${sw}/>`);
                     }
                     out.push(`<text x="${x - bw / 2}" y="${y - bh / 2 - 3 * u}" font-size="${fs}" fill="${col}" font-family="sans-serif"
-                        font-weight="${followed ? 'bold' : 'normal'}" paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${name}</text>`);
+                        font-weight="${followed ? 'bold' : 'normal'}" opacity="${coast ? 0.75 : 1}" paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${name}</text>`);
                 }
                 const inside = ovPt(a.live_px) && a.live_px[0] >= 0 && a.live_px[0] <= OV_W && a.live_px[1] >= 0 && a.live_px[1] <= OV_H;
                 if (!inside && a.enters_in_s != null && (ovPt(a.live_px) || ovPt(a.home_px))) {
@@ -3767,7 +3817,7 @@
                     const m = 10 * u;
                     const x = Math.min(Math.max(ref[0], m), OV_W - m), y = Math.min(Math.max(ref[1], m), OV_H - m);
                     const anchor = x > OV_W / 2 ? 'end' : 'start';
-                    out.push(`<circle cx="${x}" cy="${y}" r="${3 * u}" fill="none" stroke="${col}" stroke-width="1.5" ${sw}/>`);
+                    out.push(`<circle cx="${x}" cy="${y}" r="${3 * u}" fill="none" stroke="${col}" stroke-width="1.5" opacity="${op}" ${coast ? 'stroke-dasharray="3 2"' : ''} ${sw}/>`);
                     out.push(`<text x="${x + (anchor === 'end' ? -5 : 5) * u}" y="${y + 4 * u}" text-anchor="${anchor}" font-size="${fs * 0.85}"
                         fill="${col}" font-family="sans-serif" paint-order="stroke" stroke="#000" stroke-width="2" ${sw}>${name} in ${Math.round(a.enters_in_s)}s</text>`);
                 }
@@ -3800,7 +3850,9 @@
             const tbody = document.querySelector('#ac-table tbody');
             const list = fresh ? (f.aircraft || []).slice() : [];
             const target = fresh && f.follow ? f.follow.target : null;
-            const where = a => ovPt(a.live_px) && a.live_px[0] >= 0 && a.live_px[0] <= OV_W && a.live_px[1] >= 0 && a.live_px[1] <= OV_H
+            const coastTxt = a => a.state === 'coasting' ? ', coasting' + (Number.isFinite(a.radio_age_s) ? ' ' + Math.round(a.radio_age_s) + ' s' : '') : '';
+            const where = a => ovWhere(a) + coastTxt(a);
+            const ovWhere = a => ovPt(a.live_px) && a.live_px[0] >= 0 && a.live_px[0] <= OV_W && a.live_px[1] >= 0 && a.live_px[1] <= OV_H
                 ? (a.zoom_fix ? 'in view, zoom fix' : 'in view')
                 : a.enters_in_s != null ? 'enters in ' + Math.round(a.enters_in_s) + ' s' : (ovPt(a.live_px) ? 'outside' : 'no pointing');
             const rank = a => ovIsFollowed(target, a.id) ? 0 : where(a).startsWith('in view') ? 1 : a.enters_in_s != null ? 2 + a.enters_in_s / 1000 : 3;
@@ -3811,7 +3863,7 @@
                 let tr = overlayRows.get(a.id);
                 if (!tr) {
                     tr = document.createElement('tr');
-                    tr.innerHTML = '<td></td><td style="color:#888"></td><td></td><td style="text-align:right"></td>';
+                    tr.innerHTML = '<td style="padding-right:6px;width:1%"></td><td style="font-weight:bold"></td><td style="color:#888"></td><td></td>';
                     const b = document.createElement('button');
                     b.textContent = 'Follow';
                     b.style.cssText = 'background-color:#1976D2;color:white;padding:2px 8px;border:none;cursor:pointer;font-size:11px;';
@@ -3819,13 +3871,13 @@
                         const a2 = (overlayFrame && overlayFrame.aircraft || []).find(x => x.id === a.id) || a;
                         overlayCommand({cmd: 'follow', target: a.id}, 'follow ' + (a2.callsign || a.id));
                     };
-                    tr.cells[3].appendChild(b);
+                    tr.cells[0].appendChild(b);
                     overlayRows.set(a.id, tr);
                 }
-                tr.cells[0].textContent = a.callsign || '-';
-                tr.cells[1].textContent = a.id;
-                tr.cells[2].textContent = where(a);
-                tr.style.color = ovIsFollowed(target, a.id) ? '#FFEB3B' : '';
+                tr.cells[1].textContent = a.callsign || '-';
+                tr.cells[2].textContent = a.id;
+                tr.cells[3].textContent = where(a);
+                tr.style.color = ovIsFollowed(target, a.id) ? '#FFEB3B' : a.state === 'coasting' ? '#90A4AE' : '';
                 if (tbody.children[i] !== tr) tbody.insertBefore(tr, tbody.children[i] || null);
             });
             for (const [id, tr] of overlayRows) if (!seen.has(id)) { tr.remove(); overlayRows.delete(id); }
