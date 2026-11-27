@@ -22,6 +22,10 @@ import numpy as np
 from picamera2 import Picamera2
 from picamera2.encoders import H264Encoder
 from picamera2.outputs import FfmpegOutput
+try:
+    from picamera2.outputs import PyavOutput
+except ImportError:  # older picamera2
+    PyavOutput = None
 from libcamera import Transform, controls as lc_controls
 
 import camera_settings
@@ -179,14 +183,27 @@ class _CameraStream:
             self.encoder = H264Encoder(bitrate=bitrate, profile="baseline")
         except TypeError:
             self.encoder = H264Encoder(bitrate=bitrate)
-        self.output = FfmpegOutput(
-            f"-f rtsp -rtsp_transport tcp {self.rtsp_url}",
-            audio=False,
-        )
+        # PyavOutput muxes the encoder's packets straight to RTSP with their
+        # timestamps: frame times = libcamera SensorTimestamp (exposure clock,
+        # us since this stream's first frame), so clients see the true spacing
+        # between frames. FfmpegOutput piped bare H.264 to ffmpeg, which
+        # restamped each frame with its arrival time (encode delay + jitter).
+        if PyavOutput is not None:
+            self.output = PyavOutput(self.rtsp_url, format="rtsp",
+                                     options={"rtsp_transport": "tcp"})
+            self.output.error_callback = (
+                lambda e, i=self.cam_idx: print(f"camera_manager: cam{i} RTSP output failed: {e!r}", flush=True))
+            out_kind = "sensor timestamps"
+        else:
+            self.output = FfmpegOutput(
+                f"-f rtsp -rtsp_transport tcp {self.rtsp_url}",
+                audio=False,
+            )
+            out_kind = "ffmpeg arrival timestamps"
         self.picam2.start_recording(self.encoder, self.output)
         print(f"camera_manager: cam{self.cam_idx} streaming -> {self.rtsp_url} "
               f"({settings['StreamSize'][0]}x{settings['StreamSize'][1]} "
-              f"@ {bitrate/1e6:.1f} Mbit/s)")
+              f"@ {bitrate/1e6:.1f} Mbit/s, {out_kind})")
 
     def stop(self) -> None:
         with self.lock:
