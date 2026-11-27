@@ -5,3 +5,5 @@ mediamtx/
 env/
 logs/
 pointing_home.json
+recordings/
+homography_debug/
