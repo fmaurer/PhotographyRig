@@ -19,7 +19,7 @@ el = time.monotonic() - t0; p1 = plant.out["pan"]
 check("pan +1 deg arrives (true shaft)", abs(p1 - p0 - 1.0) < 0.1, f"moved {p1-p0:+.3f} deg in {el:.2f}s, err {pan.last_error}")
 check("pan peak speed <= max", plant.peak_speed["pan"] <= pan.max_dps * 1.02, f"peak {plant.peak_speed['pan']:.2f}")
 check("pan stopped + current off after move", stopped(fake, 0))
-check("MRES=1/8 + mstep_reg_select set", (fake.regs[0][tu.REG_CHOPCONF] >> 24) & 0xF == 5 and fake.regs[0][tu.REG_GCONF] & 0x80)
+check("MRES=1/256 + mstep_reg_select set", (fake.regs[0][tu.REG_CHOPCONF] >> 24) & 0xF == tu.MRES == 0 and fake.regs[0][tu.REG_GCONF] & 0x80)
 check("step counter ~ +2146 (+-1.5 encoder counts)", abs(pan.total_signed_steps - 2146) < 2146 * 0.132, f"{pan.total_signed_steps}")
 check("tilt untouched", fake.irun(1) == 0 and abs(plant.out['tilt'] + 5) < 0.01)
 
@@ -112,7 +112,33 @@ fake, bus, enc, plant, pan, tilt = rig()
 pan.step_to(2146)
 fake.regs[0][tu.REG_CHOPCONF] = 0x10000053; fake.regs[0][tu.REG_GSTAT] |= 1
 pan.step_to(-2146)
-check("driver reset -> MRES re-applied", (fake.regs[0][tu.REG_CHOPCONF] >> 24) & 0xF == 5)
+check("driver reset -> MRES re-applied", (fake.regs[0][tu.REG_CHOPCONF] >> 24) & 0xF == tu.MRES)
+plant.stop = True
+
+# 10b. driver resets DURING a move / vel session: at the reset default (1/8) our 1/256
+# VACTUAL values would run 32x too fast, so the health check must stop it
+fake, bus, enc, plant, pan, tilt = rig()
+th = threading.Thread(target=pan.step_to, args=(2146 * 20,)); th.start(); time.sleep(0.8)
+fake.regs[0][tu.REG_CHOPCONF] = 0x10000053; fake.regs[0][tu.REG_GSTAT] |= 1; tr_ = time.monotonic()
+th.join(5); dt_ = time.monotonic() - tr_
+check("driver reset mid-move: move stops with a reset error within ~1 s",
+      pan.last_error and "reset" in pan.last_error and stopped(fake, 0) and dt_ < 1.5, f"{pan.last_error!r} after {dt_:.2f}s")
+pan.step_to(2146)
+check("after a reset fault the next move sets MRES again", (fake.regs[0][tu.REG_CHOPCONF] >> 24) & 0xF == tu.MRES)
+plant.stop = True
+
+from tracker import Tracker
+fake, bus, enc, plant, pan, tilt = rig()
+tr = Tracker({"pan": pan, "tilt": tilt}); tr.start(mode="vel", auto_release_s=2.0)
+t_end = time.monotonic() + 0.6
+while time.monotonic() < t_end:
+    tr.command_vel(1.0, 0.0, 1.0); time.sleep(0.05)
+fake.regs[1][tu.REG_CHOPCONF] = 0x10000053; fake.regs[1][tu.REG_GSTAT] |= 1; tr_ = time.monotonic()
+while tr.running and time.monotonic() - tr_ < 3:
+    tr.command_vel(1.0, 0.0, 1.0); time.sleep(0.05)
+check("driver reset during vel mode: tracker faults and stops within ~1.2 s",
+      not tr.running and tr.fault and "reset" in tr.fault and stopped(fake, 0) and stopped(fake, 1),
+      f"{tr.fault!r} after {time.monotonic() - tr_:.2f}s")
 plant.stop = True
 
 # 11. set_max_speed via UI delay, capped

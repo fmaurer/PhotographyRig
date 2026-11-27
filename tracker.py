@@ -443,7 +443,7 @@ class Tracker:
                     ax = AXES[health_i % 2]
                     health_i += 1
                     try:
-                        self.bus.health(self.drv[ax].addr, ax)
+                        self.bus.health(self.drv[ax].addr, ax, running=True)
                         self._health_fail = None
                     except IOError:
                         first = getattr(self, "_health_fail", None) or t0

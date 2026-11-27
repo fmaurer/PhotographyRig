@@ -8,7 +8,7 @@ depend on that folder. Hardware (see the samwise rig notes):
     No STEP/DIR wiring; motion is the driver's internal step generator
     (VACTUAL). EN is tied to GND, so the ONLY way to stop a motor is over the
     UART (VACTUAL = 0 and/or run current = 0).
-  * 1/8 microstepping set over UART (GCONF.mstep_reg_select + CHOPCONF.MRES=5),
+  * 1/256 microstepping set over UART (GCONF.mstep_reg_select + CHOPCONF.MRES=0),
     volatile: re-applied by setup() before every move.
   * AS5600 encoders (0x36) on the OUTPUT shafts (~80:1 gear): pan on I2C bus 1,
     tilt on bus 2. 4096 counts / rev = 0.088 deg.
@@ -35,9 +35,13 @@ REG_VACTUAL = 0x22
 REG_CHOPCONF, REG_DRV_STATUS = 0x6C, 0x6F
 TMC_FCLK = 12_000_000                    # internal oscillator (~12 MHz)
 
-MRES = 5                                 # 1/8 microstep
-USTEPS_PER_REV = 200 * (256 >> MRES)     # 1600
-VACT_PER_RPM = (USTEPS_PER_REV / 60.0) / (TMC_FCLK / (1 << 24))   # ~37.3 VACTUAL units per motor rpm
+# 1/256 (was 1/8 until 2026-11-26: one 1/8 microstep is 0.0028 deg of output = ~2 zoom px,
+# so slow pans moved in visible steps, and 0.15 deg/s was VACTUAL 75 = 1.3 % speed steps).
+# SAFETY: a driver reset falls back to the pins' default (1/8), where these VACTUAL values
+# run 32x too fast -- health() treats the reset flag as a fault, and setup() re-applies MRES.
+MRES = 0                                 # 1/256 microstep
+USTEPS_PER_REV = 200 * (256 >> MRES)     # 51200
+VACT_PER_RPM = (USTEPS_PER_REV / 60.0) / (TMC_FCLK / (1 << 24))   # ~1193 VACTUAL units per motor rpm
 GEAR = 80.0                              # motor revs per output rev (approximate)
 ENC_SIGN = {"pan": -1, "tilt": +1}       # encoder-angle change for +VACTUAL (measured on the rig)
 W_DEADLINE_S = 0.4
@@ -220,7 +224,7 @@ class TMC2209Bus:
                             pass
 
     def setup(self, addr, ma):
-        """Idempotent: UART current + 1/8 microsteps, stealthChop, driver stage on. Returns actual mA."""
+        """Idempotent: UART current + 1/256 microsteps, stealthChop, driver stage on. Returns actual mA."""
         g = self.r(addr, REG_GCONF)
         g = (g | (1 << 6) | (1 << 7)) & ~((1 << 0) | (1 << 2))   # pdn_disable, mstep_reg_select; no analog I; stealthChop
         c = self.r(addr, REG_CHOPCONF)
@@ -294,8 +298,10 @@ class TMC2209Bus:
         if st["level"] or st["short"] or st["drv_err"]:
             self.health(addr, name)      # re-read: raises if still hot/faulted
 
-    def health(self, addr, name):
-        """Raise on over-temperature, short, or latched driver error. IOError if it doesn't answer."""
+    def health(self, addr, name, running=False):
+        """Raise on over-temperature, short, or latched driver error. IOError if it doesn't answer.
+        running=True (checks while a motor is driven, after setup cleared the flag): also raise
+        if the driver has reset since."""
         st = self.read_status(addr, tries=1)
         drv, gs = st["drv"], st["gstat"]
         fix = "let it cool, add a heatsink/fan, or lower the current"
@@ -307,6 +313,9 @@ class TMC2209Bus:
             raise RuntimeError(f"{name} driver short-circuit flag (0x{drv & 0x3C:02x}); check motor wiring")
         if gs & 0x2:
             raise RuntimeError(f"{name} driver error latched (over-temperature or short); {fix}")
+        if running and gs & 0x1:      # setup() cleared it; set again = the driver reset (power dip)
+            raise RuntimeError(f"{name} driver reset itself (motor power dip?): its microstep setting "
+                               f"was lost, so speeds would be wrong; stopped. The next move sets it up again")
 
 
 # ---- encoders -------------------------------------------------------------

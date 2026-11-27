@@ -397,7 +397,7 @@ class TMC2209Driver(MotorDriver):
                 if now - last_health >= HEALTH_EVERY_S:
                     last_health = now
                     try:
-                        self.bus.health(self.addr, self.axis)
+                        self.bus.health(self.addr, self.axis, running=True)
                         health_fail_since = None
                     except IOError:
                         health_fail_since = health_fail_since or now
