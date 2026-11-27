@@ -68,11 +68,13 @@ class FakeTMC:
 
 class Plant(threading.Thread):
     """Motor integrates VACTUAL; output follows through a lash band, times a slip ratio; feeds encoders."""
-    def __init__(self, fake, enc, lash=None, slip=None, start=None):
+    def __init__(self, fake, enc, lash=None, slip=None, start=None, ripple=None):
         super().__init__(daemon=True)
         self.fake, self.enc = fake, enc
         self.lash = lash or {"pan": 0.0, "tilt": 0.0}
         self.slip = slip or {"pan": 1.0, "tilt": 1.0}
+        # once-per-motor-rev transmission error: {axis: (amplitude deg, period deg of output)}
+        self.ripple = ripple or {}
         self.motor = dict(start or {"pan": 10.0, "tilt": -5.0})   # motor position in output deg (no lash)
         self.out = dict(self.motor)
         self.freeze = set(); self.drop = set(); self.stop = False
@@ -94,12 +96,17 @@ class Plant(threading.Thread):
                 h = self.lash[ax] / 2
                 if self.motor[ax] - self.out[ax] > h: self.out[ax] = self.motor[ax] - h
                 if self.out[ax] - self.motor[ax] > h: self.out[ax] = self.motor[ax] + h
+                if ax in self.ripple:
+                    amp, per = self.ripple[ax]
+                    self.out_true = getattr(self, "out_true", {})
+                    self.out_true[ax] = self.out[ax] + amp * math.sin(2 * math.pi * self.motor[ax] / per)
                 if ax in self.drop:
                     continue
                 if ax in self.freeze:
                     raw = self.frozen_raw[ax]
                 else:
-                    raw = int(round(self.out[ax] * 4096 / 360 + random.choice((-1, 0, 0, 1)))) % 4096
+                    o = self.out_true[ax] if ax in self.ripple else self.out[ax]
+                    raw = int(round(o * 4096 / 360 + random.choice((-1, 0, 0, 1)))) % 4096
                     self.frozen_raw = getattr(self, "frozen_raw", {}); self.frozen_raw[ax] = raw
                 self.enc.feed(ax, raw, now)
             time.sleep(0.005)

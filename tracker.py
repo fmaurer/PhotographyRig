@@ -97,7 +97,13 @@ class Tracker:
     # stopped a few times a second (live, follower 2026-11-26: +-119 % frame to frame).
     # Estimate = commanded motor travel (a stepper does what VACTUAL says), pulled toward
     # the encoder with this time constant; faster when they disagree by more than OBS_SNAP_DEG.
-    OBS_TAU_S = 2.0
+    OBS_TAU_S = 2.0         # longest (slowest speeds)
+    # The time constant scales with speed: it only has to average over a few encoder
+    # counts, and at speed counts come fast. A fixed 2 s let a once-per-motor-rev drive
+    # error (pan: 4.5 deg of output, ~4 s at 1.1 deg/s) through almost uncorrected:
+    # +-150 zoom px swing (live 2026-11-26 evening). tau = OBS_TAU_K / speed.
+    OBS_TAU_K = 0.075       # deg (~ one encoder count): tau 0.07 s at 1.1 deg/s, 0.5 s at 0.15
+    OBS_TAU_MIN_S = 0.05
     OBS_SNAP_DEG = 0.25
     OBS_SNAP_TAU_S = 0.1
 
@@ -358,7 +364,9 @@ class Tracker:
                         if since_rev[ax] >= cfg[f"lash_{ax}"]:     # inside the gear gap the shaft stays put
                             obs[ax] += v_out * dt
                         r = p - obs[ax]
-                        tau = self.OBS_SNAP_TAU_S if abs(r) > self.OBS_SNAP_DEG else self.OBS_TAU_S
+                        tau = min(self.OBS_TAU_S, max(self.OBS_TAU_MIN_S, self.OBS_TAU_K / max(abs(v_out), 1e-3)))
+                        if abs(r) > self.OBS_SNAP_DEG:
+                            tau = min(tau, self.OBS_SNAP_TAU_S)
                         obs[ax] += r * min(dt / tau, 1.0)
                     p_ctl = obs[ax] if self.mode == "vel" else p
                     if last_p[ax] is None or abs(p - last_p[ax]) > 0.04:
