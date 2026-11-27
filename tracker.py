@@ -59,6 +59,7 @@ class TrackFault(RuntimeError):
 class Tracker:
     CFG = {
         "kp": 6.0,              # 1/s: deg/s of correction per deg of error
+        "kp_vel": 6.0,          # 1/s: the same in vel mode (on the smoothed shaft estimate)
         "max_dps": 15.0,        # per-axis speed cap (rig has run ~21 deg/s)
         "accel": 60.0,          # deg/s^2 at the output (tested in samwise's circle mode)
         "deadband": 0.05,       # deg: no correction inside this (~half an encoder count)
@@ -90,6 +91,15 @@ class Tracker:
     LIMIT_OVERRUN_DEG = 0.5
     HEALTH_EVERY_S = 0.5    # alternates axes: each driver checked once a second
     VEL_MAX_LAG_DEG = 0.5   # vel mode: integrated target kept within this of the shaft
+    # vel mode: the speed loop works on an ESTIMATE of the shaft angle, not the raw encoder.
+    # The AS5600 moves in 0.088 deg counts, so at 0.15 deg/s a count comes every ~0.6 s and
+    # kp * (quantised error) swung the speed by +-0.26 deg/s: the rig surged and nearly
+    # stopped a few times a second (live, follower 2026-11-26: +-119 % frame to frame).
+    # Estimate = commanded motor travel (a stepper does what VACTUAL says), pulled toward
+    # the encoder with this time constant; faster when they disagree by more than OBS_SNAP_DEG.
+    OBS_TAU_S = 2.0
+    OBS_SNAP_DEG = 0.25
+    OBS_SNAP_TAU_S = 0.1
 
     def __init__(self, drivers):
         """drivers: {"pan": TMC2209Driver, "tilt": TMC2209Driver} sharing one bus/encoders."""
@@ -306,6 +316,7 @@ class Tracker:
         cmd_since_change = {ax: 0.0 for ax in AXES}
         last_p = {ax: None for ax in AXES}
         lost = {ax: None for ax in AXES}
+        obs = {ax: None for ax in AXES}               # vel mode: smoothed shaft angle (encoder frame)
         abs_off = {}
         for ax in AXES:
             a, p = self.enc.abs_deg(ax, n=15), self.enc.pos_deg(ax, n=15)
@@ -337,9 +348,19 @@ class Tracker:
                         if t0 - lost[ax] > self.ENC_LOST_S:
                             raise TrackFault(f"{ax} encoder lost")
                         want[ax] = 0.0
+                        obs[ax] = None
                         continue
                     lost[ax] = None
                     self.hist[ax].append((t0, p))
+                    if obs[ax] is None:
+                        obs[ax] = p
+                    else:
+                        if since_rev[ax] >= cfg[f"lash_{ax}"]:     # inside the gear gap the shaft stays put
+                            obs[ax] += v_out * dt
+                        r = p - obs[ax]
+                        tau = self.OBS_SNAP_TAU_S if abs(r) > self.OBS_SNAP_DEG else self.OBS_TAU_S
+                        obs[ax] += r * min(dt / tau, 1.0)
+                    p_ctl = obs[ax] if self.mode == "vel" else p
                     if last_p[ax] is None or abs(p - last_p[ax]) > 0.04:
                         last_p[ax], cmd_since_change[ax] = p, 0.0
                     elif cmd_since_change[ax] > cfg[f"lash_{ax}"] + self.STUCK_SLACK_DEG + 1.0:
@@ -354,8 +375,8 @@ class Tracker:
                     else:
                         tgt, vff, tc, _ = c
                         tgt_now = tgt + vff * (t0 - tc)
-                        e = tgt_now - p
-                        v = vff + cfg["kp"] * e
+                        e = tgt_now - p_ctl
+                        v = vff + cfg["kp_vel" if self.mode == "vel" else "kp"] * e
                         if abs(e) < cfg["deadband"] and abs(vff) < 0.05:
                             v = 0.0
                     vmax = cfg["max_dps"]
@@ -383,7 +404,7 @@ class Tracker:
                             and abs(vff) >= cfg["boost_min_ff"] and (vff > 0) == (d > 0)):
                         v = max(-vmax, min(vmax, v + d * cfg["boost_dps"]))   # max_dps stays a hard cap
                     want[ax] = v
-                    self.state[ax] = {"pos": round(p, 3), "err": None if e is None else round(e, 3),
+                    self.state[ax] = {"pos": round(p, 3), "est": round(p_ctl, 3), "err": None if e is None else round(e, 3),
                                       "v_cmd": round(v, 2), "abs": None if abs_off[ax] is None else round(p + abs_off[ax], 2)}
                 # acceleration limit, in VACTUAL units
                 new = {}
