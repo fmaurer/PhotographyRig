@@ -169,13 +169,25 @@ class _CameraStream:
             hflip=int(settings["Transform"]["hflip"]),
             vflip=int(settings["Transform"]["vflip"]),
         )
+        # Optional "SensorMode": [w, h] or [w, h, bit_depth] picks the sensor
+        # readout explicitly (IMX477 [1332, 990, 10] = 2x2-binned centre crop,
+        # 120.5 fps; the 12-bit version of that mode only does 101.7 fps).
+        # Without it picamera2 chooses from StreamSize and never picks it.
+        sensor = {}
+        mode = settings.get("SensorMode")
+        if mode:
+            sensor = {"output_size": (int(mode[0]), int(mode[1]))}
+            if len(mode) > 2 and mode[2]:
+                sensor["bit_depth"] = int(mode[2])
         video_config = self.picam2.create_video_configuration(
             main={"size": tuple(settings["StreamSize"]), "format": "YUV420"},
+            sensor=sensor,
             controls=initial_controls,
             transform=transform,
             queue=True,
         )
         self.picam2.configure(video_config)
+        cfg_sensor = self.picam2.camera_configuration().get("sensor") or {}
 
         # Per-camera "Bitrate" setting (bit/s); falls back to the manager's default.
         bitrate = int(settings.get("Bitrate") or self.bitrate)
@@ -203,7 +215,8 @@ class _CameraStream:
         self.picam2.start_recording(self.encoder, self.output)
         print(f"camera_manager: cam{self.cam_idx} streaming -> {self.rtsp_url} "
               f"({settings['StreamSize'][0]}x{settings['StreamSize'][1]} "
-              f"@ {bitrate/1e6:.1f} Mbit/s, {out_kind})")
+              f"@ {bitrate/1e6:.1f} Mbit/s, {initial_controls.get('FrameRate')} fps, "
+              f"sensor {cfg_sensor.get('output_size')} {cfg_sensor.get('bit_depth')}-bit, {out_kind})")
 
     def stop(self) -> None:
         with self.lock:

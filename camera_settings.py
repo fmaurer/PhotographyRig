@@ -28,6 +28,12 @@ DEFAULTS = {
         "StreamSize": [1280, 720],
         "StillSize": [4056, 3040],
         "FrameRate": 30.0,         # up to 50 in the 2028x1080 sensor mode (lower latency)
+        # Optional "SensorMode": [w, h] or [w, h, bit_depth] forces a sensor
+        # readout. IMX477 on samwise (Pi 5), max fps at 10 / 12 bit:
+        #   [1332, 990]  120.5 / 101.7  2x2 binned centre crop (~2/3 width FOV, 4:3)
+        #   [2028, 1080]  74.7 / 62.8   full width, 16:9
+        #   [2028, 1520]  53.8 / 45.2   full sensor
+        #   [4056, 3040]  14.0 / 11.7   full resolution
     },
     # cam1 — Arducam 64MP (Pivariety). Matches current rpicam-vid args:
     #   --shutter 1000 --hflip --vflip --lens-position 6 --autofocus-mode manual
