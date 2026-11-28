@@ -190,15 +190,20 @@ def main():
         except FileNotFoundError:
             print("WARNING: rig_limits.json not found -- NO travel limits")
         lim = limits_cfg.get("limits_deg") or {}
+        # Motor run current (mA; hold = half). Pan was 1000 and hit the driver's
+        # 120 C warning on long follows (2026-11-27); heat goes with current
+        # squared, so 700 is about half the heat. Override with RIG_PAN_MA / RIG_TILT_MA.
+        PAN_CURRENT_MA = int(os.environ.get("RIG_PAN_MA", "700"))
+        TILT_CURRENT_MA = int(os.environ.get("RIG_TILT_MA", "1400"))
         encoders = tmc2209_uart.AS5600Encoders(zero_raw=limits_cfg.get("encoder_zero_raw"))
         tmc2208_driver = TMC2209Driver(motor_bus, encoders, "pan", PAN_STEP_DELAY, PAN_STEPS_PER_DEG,
-                                       current_ma=1000, step_sign=PAN_STEP_SIGN,
+                                       current_ma=PAN_CURRENT_MA, step_sign=PAN_STEP_SIGN,
                                        soft_limits=PAN_SOFT_LIMITS, travel_limits=lim.get("pan"))
         tmc2208_driver_2 = TMC2209Driver(motor_bus, encoders, "tilt", TILT_STEP_DELAY, TILT_STEPS_PER_DEG,
-                                         current_ma=1400, step_sign=TILT_STEP_SIGN,
+                                         current_ma=TILT_CURRENT_MA, step_sign=TILT_STEP_SIGN,
                                          soft_limits=TILT_SOFT_LIMITS, travel_limits=lim.get("tilt"))
-        print(f"Motors: TMC2209 UART, pan {tmc2208_driver.max_dps:.2f} deg/s, "
-              f"tilt {tmc2208_driver_2.max_dps:.2f} deg/s max; travel limits "
+        print(f"Motors: TMC2209 UART, pan {tmc2208_driver.max_dps:.2f} deg/s max {PAN_CURRENT_MA} mA, "
+              f"tilt {tmc2208_driver_2.max_dps:.2f} deg/s max {TILT_CURRENT_MA} mA; travel limits "
               f"pan {lim.get('pan')} tilt {lim.get('tilt')} deg")
     elif MOTOR_BACKEND == "tmc2208_gpio":
         tmc2208_driver = TMC2208Driver(STEP_PIN, DIR_PIN, ENABLE_PIN, PAN_STEP_DELAY,
