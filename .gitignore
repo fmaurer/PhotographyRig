@@ -7,3 +7,6 @@ logs/
 pointing_home.json
 recordings/
 homography_debug/
+
+# lgpio notification pipes (FIFOs; git cannot hash them)
+.lgd-nfy*
